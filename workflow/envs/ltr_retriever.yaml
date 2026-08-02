@@ -1,0 +1,16 @@
+name: te_ltr
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - ltr_retriever >=2.9
+  - ltr_finder >=1.07
+  - ltr_finder_parallel >=1.4
+  - genometools-genometools >=1.6
+  - repeatmasker >=4.1.5
+  - cd-hit >=4.8.1
+  - blast >=2.14
+  - hmmer >=3.3
+  - trf >=4.09
+  - tesorter
+  - perl

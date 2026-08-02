@@ -1,0 +1,7 @@
+name: te-annotation-snakemake
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - snakemake-minimal =9.24.0
+  - snakemake-executor-plugin-cluster-generic

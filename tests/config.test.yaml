@@ -1,0 +1,26 @@
+genome: "tests/data/genome.fa"
+output_dir: "tests/results"
+database_name: "test_RMdb"
+species_name: "Test_species"
+taxon: "Aves"
+famdb_script: "/bin/true"
+famdb_dir: "tests/data"
+protein_db: "tests/data/proteins.fa"
+rm_util_dir: "/tmp"
+container_runtime: "docker"
+tetools_image: "dfam/tetools:2.00"
+run_ltr_retriever: false
+run_trf: false
+generate_landscape: false
+cdhit_identity_2d: 0.90
+cdhit_coverage_2d: 0.80
+cdhit_identity_self: 0.80
+cdhit_coverage_self: 0.80
+resources:
+  repeatmodeler: {threads: 1, mem_gb: 1, time: "00:10:00", partition: "test"}
+  classify_filter: {threads: 1, mem_gb: 1, time: "00:10:00", partition: "test"}
+  ltr_retriever: {threads: 1, mem_gb: 1, time: "00:10:00", partition: "test"}
+  cdhit: {threads: 1, mem_gb: 1, time: "00:10:00", partition: "test"}
+  repeatmasker: {threads: 1, mem_gb: 1, time: "00:10:00", partition: "test"}
+  postprocess: {threads: 1, mem_gb: 1, time: "00:10:00", partition: "test"}
+  light: {threads: 1, mem_gb: 1, time: "00:10:00", partition: "test"}

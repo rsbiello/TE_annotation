@@ -1,0 +1,21 @@
+executor: cluster-generic
+cluster-generic-submit-cmd: >-
+  sbatch --parsable
+  --partition={resources.partition}
+  --cpus-per-task={threads}
+  --mem={resources.mem_mb}M
+  --time={resources.walltime}
+  --job-name=sm_{rule}
+  --output=logs/slurm/%j-{rule}.out
+  --error=logs/slurm/%j-{rule}.err
+jobs: 50
+latency-wait: 120
+rerun-incomplete: true
+keep-going: true
+printshellcmds: true
+use-conda: true
+conda-prefix: .snakemake/conda
+default-resources:
+  mem_mb: 4096
+  walltime: "01:00:00"
+  partition: "standard"

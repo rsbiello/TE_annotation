@@ -1,0 +1,525 @@
+import os
+import re
+from pathlib import Path
+
+# ============================================================================
+# HELPERS
+# ============================================================================
+
+def slurm_res(key):
+    cfg = config["resources"][key]
+    return {
+        "mem_mb":    cfg["mem_gb"] * 1024,
+        "walltime":  cfg["time"],
+        "partition": cfg["partition"],
+    }
+
+
+def safe_name(value):
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("_")
+
+
+def cdhit_est_word_size(identity):
+    if identity >= 0.90:
+        return 8
+    if identity >= 0.88:
+        return 7
+    if identity >= 0.85:
+        return 6
+    if identity >= 0.80:
+        return 5
+    if identity >= 0.75:
+        return 4
+    raise ValueError("CD-HIT-EST identity must be at least 0.75")
+
+# ============================================================================
+# GLOBALS
+# ============================================================================
+
+GENOME      = config["genome"]
+# RepeatMasker appends its suffixes to the complete input filename (including
+# .fa/.fasta), e.g. genome.fa.out and genome.fa.masked.
+GENOME_NAME = Path(GENOME).name
+DB_NAME     = config["database_name"]
+OUTDIR      = config["output_dir"]
+TAXON       = config["taxon"]
+SPECIES     = config.get("species_name", Path(GENOME).stem)
+TAXON_NAME  = safe_name(TAXON)
+SPECIES_NAME = safe_name(SPECIES)
+FINAL_LIBRARY_NAME = config.get(
+    "final_library_name",
+    f"{SPECIES_NAME}_combined_curated_{TAXON_NAME}.fa",
+)
+TETOOLS_IMAGE = config["tetools_image"].removeprefix("docker://")
+CONTAINER_RUNTIME = config.get("container_runtime", "docker")
+
+localrules: all
+
+# ============================================================================
+# FINAL TARGETS
+# ============================================================================
+
+FINAL = [
+    f"{OUTDIR}/03_repeatmasker_final/{GENOME_NAME}.masked",
+    f"{OUTDIR}/04_postprocess/repeats.bed",
+    f"{OUTDIR}/04_postprocess/te_summary_by_class.tsv",
+]
+
+if config.get("run_trf", False):
+    FINAL.append(f"{OUTDIR}/04_postprocess/tandem_repeats.bed")
+
+if config.get("generate_landscape", False):
+    FINAL.append(f"{OUTDIR}/04_postprocess/repeat_landscape.html")
+
+rule all:
+    input:
+        FINAL
+
+# ============================================================================
+# 01 DE NOVO DISCOVERY (RepeatModeler via Docker)
+# ============================================================================
+
+rule repeatmodeler:
+    input:
+        genome = GENOME
+    output:
+        families = f"{OUTDIR}/01_repeatmodeler/{DB_NAME}-families.fa"
+    params:
+        db   = DB_NAME,
+        odir = f"{OUTDIR}/01_repeatmodeler",
+        image = TETOOLS_IMAGE,
+        runtime = CONTAINER_RUNTIME
+    threads: config["resources"]["repeatmodeler"]["threads"]
+    resources:
+        **slurm_res("repeatmodeler")
+    shell:
+        """
+        mkdir -p {params.odir}
+        GENOME_ABS=$(readlink -f {input.genome})
+        GENOME_DIR=$(dirname $GENOME_ABS)
+        GENOME_FILE=$(basename $GENOME_ABS)
+        OUT_ABS=$(readlink -f {params.odir})
+
+        {params.runtime} run --rm \
+            --user $(id -u):$(id -g) \
+            -e HOME=/tmp \
+            -e BLAST_USAGE_REPORT=false \
+            -e RM_DATABASE={params.db} \
+            -e RM_THREADS={threads} \
+            -e RM_GENOME_FILE=$GENOME_FILE \
+            -v $GENOME_DIR:/genome:ro \
+            -v $OUT_ABS:/output \
+            -w /output \
+            {params.image} \
+            bash -c 'set -euo pipefail; \
+                RepeatModeler -version; \
+                BuildDatabase -name "{params.db}" "/genome/$RM_GENOME_FILE"; \
+                RepeatModeler -database "{params.db}" -threads "{threads}" -LTRStruct'
+        """
+
+# ============================================================================
+# 01B CLASSIFY & FILTER ARTIFACTS
+# ============================================================================
+
+rule classify_filter:
+    input:
+        families = rules.repeatmodeler.output.families,
+        protein_db = config["protein_db"]
+    output:
+        filtered = f"{OUTDIR}/01b_classified_filtered/{DB_NAME}-families.classified.filtered.fa",
+        report   = f"{OUTDIR}/01b_classified_filtered/removed_artifacts.tsv"
+    params:
+        odir       = f"{OUTDIR}/01b_classified_filtered"
+    threads: config["resources"]["classify_filter"]["threads"]
+    resources:
+        **slurm_res("classify_filter")
+    conda:
+        "envs/repeatmasker.yaml"
+    shell:
+        """
+        mkdir -p {params.odir}
+
+        # Classify
+        RepeatClassifier -consensi {input.families} -threads {threads}
+        CLASSIFIED={input.families}.classified
+
+        # BLASTx vs proteins
+        makeblastdb -in {input.protein_db} -dbtype prot -out {params.odir}/protdb -parse_seqids
+        blastx -query $CLASSIFIED \
+            -db {params.odir}/protdb \
+            -outfmt "6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore stitle" \
+            -evalue 1e-10 -num_threads {threads} \
+            -out {params.odir}/blastx_vs_proteins.tsv
+
+        # Filter artifacts
+        python workflow/scripts/filter_artifacts.py \
+            --input $CLASSIFIED \
+            --blast {params.odir}/blastx_vs_proteins.tsv \
+            --output {output.filtered} \
+            --report {output.report}
+        """
+
+# ============================================================================
+# 02B LTR CANDIDATE DISCOVERY + LTR_RETRIEVER (optional)
+# ============================================================================
+
+rule ltr_retriever:
+    input:
+        genome = GENOME
+    output:
+        ltr_lib = f"{OUTDIR}/02b_ltr_retriever/LTRlib.fa"
+    params:
+        odir = f"{OUTDIR}/02b_ltr_retriever"
+    threads: config["resources"]["ltr_retriever"]["threads"]
+    resources:
+        **slurm_res("ltr_retriever")
+    conda:
+        "envs/ltr_retriever.yaml"
+    shell:
+        """
+        mkdir -p {params.odir}
+        cd {params.odir}
+
+        GENOME_ABS=$(readlink -f {input.genome})
+        GENOME_LOCAL=$(basename "$GENOME_ABS")
+        ln -sf "$GENOME_ABS" "$GENOME_LOCAL"
+
+        # LTR_retriever requires candidate calls. Generate candidates with both
+        # tools recommended by the LTR_retriever authors.
+        gt suffixerator \
+            -db "$GENOME_LOCAL" \
+            -indexname "$GENOME_LOCAL" \
+            -tis -suf -lcp -des -ssp -sds -dna
+
+        gt ltrharvest \
+            -index "$GENOME_LOCAL" \
+            -minlenltr 100 -maxlenltr 7000 \
+            -mintsd 4 -maxtsd 6 \
+            -motif TGCA -motifmis 1 \
+            -similar 85 -vic 10 -seed 20 \
+            -seqids yes \
+            > "$GENOME_LOCAL.harvest.scn"
+
+        LTR_FINDER_parallel \
+            -seq "$GENOME_LOCAL" \
+            -threads {threads} \
+            -harvest_out \
+            -size 1000000 \
+            -time 300
+
+        cat \
+            "$GENOME_LOCAL.harvest.scn" \
+            "$GENOME_LOCAL.finder.combine.scn" \
+            > "$GENOME_LOCAL.rawLTR.scn"
+
+        # An empty library is legitimate only when both discovery methods find
+        # no candidates. Program failures still terminate the rule.
+        if [[ ! -s "$GENOME_LOCAL.rawLTR.scn" ]]; then
+            : > {output.ltr_lib}
+            exit 0
+        fi
+
+        LTR_retriever \
+            -genome "$GENOME_LOCAL" \
+            -inharvest "$GENOME_LOCAL.rawLTR.scn" \
+            -threads {threads}
+
+        # Recent versions may encode sequence names and insert '.mod' into the
+        # output name, so locate the non-nmtf library explicitly.
+        LTR_LIB=$(find . -maxdepth 1 -type f \
+            -name "$GENOME_LOCAL*.LTRlib.fa" \
+            ! -name "*.nmtf.LTRlib.fa" \
+            -print -quit)
+
+        if [[ -z "$LTR_LIB" || ! -s "$LTR_LIB" ]]; then
+            echo "ERROR: LTR_retriever did not produce a nonempty LTR library" >&2
+            exit 1
+        fi
+
+        cp "$LTR_LIB" {output.ltr_lib}
+        """
+
+# ============================================================================
+# EXPORT CURATED DFAM
+# ============================================================================
+
+rule export_dfam:
+    output:
+        curated = f"{OUTDIR}/02_library/{TAXON_NAME}_Dfam_curated_all.fa"
+    params:
+        famdb_script = config["famdb_script"],
+        famdb_dir  = config["famdb_dir"],
+        taxon      = TAXON
+    resources:
+        **slurm_res("cdhit")
+    conda:
+        "envs/repeatmasker.yaml"
+    shell:
+        """
+        mkdir -p $(dirname {output.curated})
+        python3 {params.famdb_script} \
+            -i {params.famdb_dir} \
+            families -c -a -d -f fasta_name --include-class-in-name \
+            {params.taxon} > {output.curated}
+        """
+
+# ============================================================================
+# MERGE DE NOVO + LTR
+# ============================================================================
+
+def merge_ltr_input(wildcards):
+    if config.get("run_ltr_retriever", False):
+        return rules.ltr_retriever.output.ltr_lib
+    return []
+
+rule merge_ltr:
+    input:
+        denovo = rules.classify_filter.output.filtered,
+        ltr    = merge_ltr_input
+    output:
+        merged = f"{OUTDIR}/02_library/denovo_plus_ltr.fa"
+    resources:
+        **slurm_res("light")
+    run:
+        import shutil
+        shutil.copy(input.denovo, output.merged)
+        if config.get("run_ltr_retriever", False):
+            ltr_path = str(input.ltr)
+        if config.get("run_ltr_retriever", False) and os.path.getsize(ltr_path) > 0:
+            with open(output.merged, "a") as out_f:
+                with open(ltr_path) as in_f:
+                    out_f.write(in_f.read())
+
+# ============================================================================
+# CD-HIT: REMOVE DE NOVO MATCHING CURATED (90/80)
+# ============================================================================
+
+rule cdhit_2d:
+    input:
+        curated = rules.export_dfam.output.curated,
+        denovo  = rules.merge_ltr.output.merged
+    output:
+        filtered = f"{OUTDIR}/02_library/{DB_NAME}_not_in_curated.fa"
+    params:
+        identity = config["cdhit_identity_2d"],
+        coverage = config["cdhit_coverage_2d"],
+        word     = cdhit_est_word_size(config["cdhit_identity_2d"]),
+        mem      = int(config["resources"]["cdhit"]["mem_gb"] * 1024 * 0.9)
+    threads: config["resources"]["cdhit"]["threads"]
+    resources:
+        **slurm_res("cdhit")
+    conda:
+        "envs/repeatmasker.yaml"
+    shell:
+        """
+        cd-hit-est-2d \
+            -i {input.curated} \
+            -i2 {input.denovo} \
+            -o {output.filtered} \
+            -c {params.identity} \
+            -n {params.word} \
+            -G 1 \
+            -aS {params.coverage} \
+            -s2 0.0 \
+            -r 1 \
+            -g 1 \
+            -d 0 \
+            -T {threads} \
+            -M {params.mem}
+        """
+
+# ============================================================================
+# CD-HIT: SELF-CLUSTERING DE NOVO (80/80)
+# ============================================================================
+
+rule cdhit_self:
+    input:
+        rules.cdhit_2d.output.filtered
+    output:
+        nr = f"{OUTDIR}/02_library/{DB_NAME}_not_in_curated_nr.fa"
+    params:
+        identity = config["cdhit_identity_self"],
+        coverage = config["cdhit_coverage_self"],
+        word     = cdhit_est_word_size(config["cdhit_identity_self"]),
+        mem      = int(config["resources"]["cdhit"]["mem_gb"] * 1024 * 0.9)
+    threads: config["resources"]["cdhit"]["threads"]
+    resources:
+        **slurm_res("cdhit")
+    conda:
+        "envs/repeatmasker.yaml"
+    shell:
+        """
+        cd-hit-est \
+            -i {input} \
+            -o {output.nr} \
+            -c {params.identity} \
+            -n {params.word} \
+            -G 1 \
+            -aS {params.coverage} \
+            -r 1 \
+            -g 1 \
+            -d 0 \
+            -T {threads} \
+            -M {params.mem}
+        """
+
+# ============================================================================
+# COMBINE FINAL LIBRARY
+# ============================================================================
+
+rule combine_library:
+    input:
+        curated = rules.export_dfam.output.curated,
+        denovo  = rules.cdhit_self.output.nr
+    output:
+        combined  = f"{OUTDIR}/02_library/{FINAL_LIBRARY_NAME}",
+        dup_check = f"{OUTDIR}/02_library/duplicate_family_names_after_cdhit.txt"
+    resources:
+        **slurm_res("light")
+    shell:
+        """
+        cat {input.curated} {input.denovo} > {output.combined}
+        grep '^>' {output.combined} | sed 's/^>//; s/#.*//' | sort | uniq -d > {output.dup_check}
+        [[ -s {output.dup_check} ]] && {{ echo "ERROR: duplicate names"; cat {output.dup_check}; exit 1; }} || true
+        """
+
+# ============================================================================
+# 03 FINAL REPEATMASKER
+# ============================================================================
+
+rule repeatmasker:
+    input:
+        genome  = GENOME,
+        library = rules.combine_library.output.combined
+    output:
+        masked = f"{OUTDIR}/03_repeatmasker_final/{GENOME_NAME}.masked",
+        out    = f"{OUTDIR}/03_repeatmasker_final/{GENOME_NAME}.out",
+        gff    = f"{OUTDIR}/03_repeatmasker_final/{GENOME_NAME}.out.gff",
+        tbl    = f"{OUTDIR}/03_repeatmasker_final/{GENOME_NAME}.tbl",
+        align  = f"{OUTDIR}/03_repeatmasker_final/{GENOME_NAME}.align"
+    params:
+        odir      = f"{OUTDIR}/03_repeatmasker_final",
+        famdb     = config["famdb_dir"],
+        pa        = lambda wc, threads: max(1, threads // 4)
+    threads: config["resources"]["repeatmasker"]["threads"]
+    resources:
+        **slurm_res("repeatmasker")
+    conda:
+        "envs/repeatmasker.yaml"
+    shell:
+        """
+        mkdir -p {params.odir}
+        RepeatMasker \
+            -gff -s -xsmall -align \
+            -pa {params.pa} \
+            -famdb_dir {params.famdb} \
+            -lib {input.library} \
+            -dir {params.odir} \
+            {input.genome}
+        """
+
+# ============================================================================
+# 04A TANDEM REPEATS FINDER (optional)
+# ============================================================================
+
+rule trf:
+    input:
+        genome = GENOME
+    output:
+        bed = f"{OUTDIR}/04_postprocess/tandem_repeats.bed"
+    params:
+        odir = f"{OUTDIR}/04_postprocess/trf"
+    threads: config["resources"]["postprocess"]["threads"]
+    resources:
+        **slurm_res("postprocess")
+    conda:
+        "envs/trf.yaml"
+    shell:
+        """
+        mkdir -p {params.odir}
+        cd {params.odir}
+        trf $(readlink -f {input.genome}) 2 5 7 80 10 50 2000 -f -d -h
+        DAT=$(find . -maxdepth 1 -name "*.dat" | head -1)
+        if [[ -z "$DAT" || ! -f "$DAT" ]]; then
+            echo "ERROR: TRF completed without producing a .dat file" >&2
+            exit 1
+        fi
+        awk '/^Sequence:/ {{seq=$2}} /^[0-9]/ {{print seq"\\t"$1-1"\\t"$2"\\tTRF_period_"$3"\\t0\\t."}}' "$DAT" > {output.bed}
+        """
+
+# ============================================================================
+# 04B REPEATMASKER TO BED
+# ============================================================================
+
+rule rm_to_bed:
+    input:
+        rules.repeatmasker.output.out
+    output:
+        bed = f"{OUTDIR}/04_postprocess/repeats.bed"
+    resources:
+        **slurm_res("postprocess")
+    shell:
+        """
+        mkdir -p $(dirname {output.bed})
+        awk 'NR>3 && $0 !~ /^#/ && NF>=15 {{
+            chr=$5; start=$6; end=$7; strand=$9; class=$11; family=$10;
+            if (strand=="C") strand="-";
+            print chr"\\t"start-1"\\t"end"\\t"family"#"class"\\t0\\t"strand
+        }}' {input} | sort -k1,1 -k2,2n > {output.bed}
+        """
+
+# ============================================================================
+# 04C TE CLASS SUMMARY
+# ============================================================================
+
+rule te_summary:
+    input:
+        rm_out = rules.repeatmasker.output.out,
+        genome = GENOME
+    output:
+        summary = f"{OUTDIR}/04_postprocess/te_summary_by_class.tsv"
+    resources:
+        **slurm_res("postprocess")
+    shell:
+        """
+        mkdir -p $(dirname {output.summary})
+        GENOME_SIZE=$(grep -v '^>' {input.genome} | tr -d '\\n' | wc -c)
+        printf 'Class\\tTotal_bp\\tHit_count\\tPercent_genome\\n' > {output.summary}
+        awk -v gs="$GENOME_SIZE" 'NR>3 && $0 !~ /^#/ && NF>=15 {{
+            split($11, a, "/"); class=a[1]; if (class=="") class="Unknown";
+            len=$7-$6+1; total[class]+=len; count[class]++
+        }}
+        END {{
+            for (c in total) print c"\\t"total[c]"\\t"count[c]"\\t"(total[c]/gs)*100
+        }}' {input.rm_out} | sort -k2,2nr >> {output.summary}
+        """
+
+# ============================================================================
+# 04D TE LANDSCAPE (optional)
+# ============================================================================
+
+rule landscape:
+    input:
+        align  = rules.repeatmasker.output.align,
+        genome = GENOME
+    output:
+        html = f"{OUTDIR}/04_postprocess/repeat_landscape.html"
+    params:
+        rm_util = config["rm_util_dir"]
+    threads: 1
+    resources:
+        **slurm_res("postprocess")
+    conda:
+        "envs/repeatmasker.yaml"
+    shell:
+        """
+        mkdir -p $(dirname {output.html})
+        GENOME_SIZE=$(grep -v '^>' {input.genome} | tr -d '\\n' | wc -c)
+        perl {params.rm_util}/calcDivergenceFromAlign.pl \
+            -s {output.html}.divsum \
+            {input.align}
+        perl {params.rm_util}/createRepeatLandscape.pl \
+            -div {output.html}.divsum \
+            -g $GENOME_SIZE \
+            > {output.html}
+        """

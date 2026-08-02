@@ -1,0 +1,69 @@
+# Copy this file to config/config.yaml and replace every example path.
+
+# Inputs and output
+genome: "/absolute/path/to/genome.fa"
+output_dir: "results"
+database_name: "species_RMdb"
+species_name: "Genus_species"
+taxon: "Aves"
+# Optional; defaults to <species>_combined_curated_<taxon>.fa
+# final_library_name: "Genus_species_combined_repeats.fa"
+
+# External data and utilities
+famdb_script: "/absolute/path/to/FamDB/famdb.py"
+famdb_dir: "/absolute/path/to/FamDB/Libraries/famdb"
+protein_db: "/absolute/path/to/uniprot_sprot.fasta"
+rm_util_dir: "/absolute/path/to/RepeatMasker/util"
+
+# RepeatModeler container. Docker and Podman use the same command shape here.
+container_runtime: "docker"
+tetools_image: "dfam/tetools:2.00"
+
+# Optional branches
+run_ltr_retriever: true
+run_trf: true
+generate_landscape: true
+
+# CD-HIT thresholds
+cdhit_identity_2d: 0.90
+cdhit_coverage_2d: 0.80
+cdhit_identity_self: 0.80
+cdhit_coverage_self: 0.80
+
+# Cluster resources. Partition names and limits are site-specific.
+resources:
+  repeatmodeler:
+    threads: 32
+    mem_gb: 64
+    time: "7-00:00:00"
+    partition: "bigmem"
+  classify_filter:
+    threads: 16
+    mem_gb: 64
+    time: "2-00:00:00"
+    partition: "bigmem"
+  ltr_retriever:
+    threads: 32
+    mem_gb: 64
+    time: "5-00:00:00"
+    partition: "bigmem"
+  cdhit:
+    threads: 8
+    mem_gb: 64
+    time: "2-00:00:00"
+    partition: "bigmem"
+  repeatmasker:
+    threads: 64
+    mem_gb: 128
+    time: "7-00:00:00"
+    partition: "bigmem"
+  postprocess:
+    threads: 16
+    mem_gb: 32
+    time: "1-00:00:00"
+    partition: "standard"
+  light:
+    threads: 1
+    mem_gb: 4
+    time: "01:00:00"
+    partition: "standard"

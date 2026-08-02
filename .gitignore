@@ -1,0 +1,23 @@
+.DS_Store
+__pycache__/
+.pycache/
+*.py[cod]
+.pytest_cache/
+
+# Local configuration and runtime state
+config/config.yaml
+.snakemake/
+logs/
+slurm-*.out
+slurm-*.err
+
+# Default result and data locations
+/results/
+/tests/results/
+/data/
+/databases/
+
+# Editor files
+.idea/
+.vscode/
+*.swp
