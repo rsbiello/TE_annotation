@@ -8,11 +8,16 @@ from pathlib import Path
 
 def slurm_res(key):
     cfg = config["resources"][key]
-    return {
+    resources = {
         "mem_mb":    cfg["mem_gb"] * 1024,
         "walltime":  cfg["time"],
         "partition": cfg["partition"],
     }
+    # Optional site-specific constraint. The public SLURM profile does not
+    # require this, while private Jarvis configurations may set mark7 here.
+    if cfg.get("nodelist"):
+        resources["nodelist"] = cfg["nodelist"]
+    return resources
 
 
 def safe_name(value):
@@ -53,6 +58,17 @@ FINAL_LIBRARY_NAME = config.get(
 TETOOLS_IMAGE = config["tetools_image"].removeprefix("docker://")
 CONTAINER_RUNTIME = config.get("container_runtime", "docker")
 
+TRF_ROOT = f"{OUTDIR}/04_postprocess/trf"
+TRF_CHUNKS = int(config.get("trf_chunks", 32))
+TRF_CONFIG = config.get("trf_parameters", {})
+TRF_THREADS = int(config["resources"]["trf"].get("threads", 1))
+if not 1 <= TRF_CHUNKS <= 256:
+    raise ValueError("trf_chunks must be between 1 and 256")
+if TRF_THREADS != 1:
+    raise ValueError(
+        "resources.trf.threads must be 1 because TRF parallelism uses chunks"
+    )
+
 localrules: all
 
 # ============================================================================
@@ -76,7 +92,7 @@ rule all:
         FINAL
 
 # ============================================================================
-# 01 DE NOVO DISCOVERY (RepeatModeler via Docker)
+# 01 DE NOVO DISCOVERY (RepeatModeler via Docker/Podman)
 # ============================================================================
 
 rule repeatmodeler:
@@ -291,7 +307,7 @@ rule merge_ltr:
                     out_f.write(in_f.read())
 
 # ============================================================================
-# CD-HIT: REMOVE DE NOVO MATCHING CURATED (90/80)
+# CD-HIT: REMOVE DE NOVO MATCHING CURATED
 # ============================================================================
 
 rule cdhit_2d:
@@ -329,7 +345,7 @@ rule cdhit_2d:
         """
 
 # ============================================================================
-# CD-HIT: SELF-CLUSTERING DE NOVO (80/80)
+# CD-HIT: SELF-CLUSTERING DE NOVO
 # ============================================================================
 
 rule cdhit_self:
@@ -419,32 +435,103 @@ rule repeatmasker:
         """
 
 # ============================================================================
-# 04A TANDEM REPEATS FINDER (optional)
+# 04A TANDEM REPEATS FINDER: SCATTER/GATHER (optional)
 # ============================================================================
 
-rule trf:
+checkpoint split_genome_for_trf:
     input:
         genome = GENOME
     output:
-        bed = f"{OUTDIR}/04_postprocess/tandem_repeats.bed"
+        chunks = directory(f"{TRF_ROOT}/chunks"),
+        manifest = f"{TRF_ROOT}/manifest.tsv"
     params:
-        odir = f"{OUTDIR}/04_postprocess/trf"
-    threads: config["resources"]["postprocess"]["threads"]
+        chunk_count = TRF_CHUNKS
+    threads: TRF_THREADS
     resources:
-        **slurm_res("postprocess")
+        **slurm_res("light")
+    script:
+        "scripts/split_fasta.py"
+
+
+def trf_chunk_fasta(wildcards):
+    completed = checkpoints.split_genome_for_trf.get()
+    return os.path.join(str(completed.output.chunks), f"{wildcards.chunk}.fa")
+
+
+def trf_chunk_beds(wildcards):
+    completed = checkpoints.split_genome_for_trf.get()
+    beds = []
+    with open(str(completed.output.manifest), encoding="utf-8") as handle:
+        header = next(handle, "").rstrip("\n").split("\t")
+        if header != ["chunk", "sequence_count", "total_bases", "fasta"]:
+            raise ValueError("Invalid TRF chunk manifest header")
+        for line in handle:
+            if line.strip():
+                chunk = line.split("\t", 1)[0]
+                beds.append(f"{TRF_ROOT}/bed/{chunk}.bed")
+    if not beds:
+        raise ValueError("TRF chunk manifest contains no chunks")
+    return beds
+
+
+rule trf_chunk:
+    input:
+        fasta = trf_chunk_fasta
+    output:
+        bed = f"{TRF_ROOT}/bed/{{chunk}}.bed"
+    params:
+        tmp_parent = f"{TRF_ROOT}/tmp",
+        match = int(TRF_CONFIG.get("match", 2)),
+        mismatch = int(TRF_CONFIG.get("mismatch", 5)),
+        delta = int(TRF_CONFIG.get("delta", 7)),
+        pm = int(TRF_CONFIG.get("pm", 80)),
+        pi = int(TRF_CONFIG.get("pi", 10)),
+        minscore = int(TRF_CONFIG.get("minscore", 50)),
+        maxperiod = int(TRF_CONFIG.get("maxperiod", 2000))
+    threads: TRF_THREADS
+    resources:
+        **slurm_res("trf")
     conda:
         "envs/trf.yaml"
     shell:
         """
-        mkdir -p {params.odir}
-        cd {params.odir}
-        trf $(readlink -f {input.genome}) 2 5 7 80 10 50 2000 -f -d -h
-        DAT=$(find . -maxdepth 1 -name "*.dat" | head -1)
+        FASTA=$(readlink -f {input.fasta})
+        BED=$(readlink -m {output.bed})
+        TMP_PARENT=$(readlink -m {params.tmp_parent})
+        mkdir -p "$TMP_PARENT" "$(dirname "$BED")"
+
+        TRF_WORK=$(mktemp -d "$TMP_PARENT/{wildcards.chunk}.XXXXXX")
+        trap 'rm -rf "$TRF_WORK"' EXIT
+        cd "$TRF_WORK"
+
+        trf "$FASTA" \
+            {params.match} {params.mismatch} {params.delta} \
+            {params.pm} {params.pi} {params.minscore} {params.maxperiod} \
+            -d -h
+
+        DAT=$(find "$TRF_WORK" -maxdepth 1 -type f -name '*.dat' -print -quit)
         if [[ -z "$DAT" || ! -f "$DAT" ]]; then
-            echo "ERROR: TRF completed without producing a .dat file" >&2
+            echo "ERROR: TRF completed without producing a .dat file for {wildcards.chunk}" >&2
             exit 1
         fi
-        awk '/^Sequence:/ {{seq=$2}} /^[0-9]/ {{print seq"\\t"$1-1"\\t"$2"\\tTRF_period_"$3"\\t0\\t."}}' "$DAT" > {output.bed}
+
+        awk '/^Sequence:/ {{seq=$2}} /^[0-9]/ {{
+            print seq"\t"$1-1"\t"$2"\tTRF_period_"$3"\t0\t."
+        }}' "$DAT" > "$BED"
+        """
+
+
+rule merge_trf:
+    input:
+        beds = trf_chunk_beds
+    output:
+        bed = f"{OUTDIR}/04_postprocess/tandem_repeats.bed"
+    resources:
+        **slurm_res("postprocess")
+    shell:
+        """
+        mkdir -p $(dirname {output.bed})
+        LC_ALL=C sort -k1,1 -k2,2n {input.beds:q} > {output.bed}
         """
 
 # ============================================================================
@@ -464,7 +551,7 @@ rule rm_to_bed:
         awk 'NR>3 && $0 !~ /^#/ && NF>=15 {{
             chr=$5; start=$6; end=$7; strand=$9; class=$11; family=$10;
             if (strand=="C") strand="-";
-            print chr"\\t"start-1"\\t"end"\\t"family"#"class"\\t0\\t"strand
+            print chr"\t"start-1"\t"end"\t"family"#"class"\t0\t"strand
         }}' {input} | sort -k1,1 -k2,2n > {output.bed}
         """
 
@@ -483,14 +570,14 @@ rule te_summary:
     shell:
         """
         mkdir -p $(dirname {output.summary})
-        GENOME_SIZE=$(grep -v '^>' {input.genome} | tr -d '\\n' | wc -c)
-        printf 'Class\\tTotal_bp\\tHit_count\\tPercent_genome\\n' > {output.summary}
+        GENOME_SIZE=$(grep -v '^>' {input.genome} | tr -d '\n' | wc -c)
+        printf 'Class\tTotal_bp\tHit_count\tPercent_genome\n' > {output.summary}
         awk -v gs="$GENOME_SIZE" 'NR>3 && $0 !~ /^#/ && NF>=15 {{
             split($11, a, "/"); class=a[1]; if (class=="") class="Unknown";
             len=$7-$6+1; total[class]+=len; count[class]++
         }}
         END {{
-            for (c in total) print c"\\t"total[c]"\\t"count[c]"\\t"(total[c]/gs)*100
+            for (c in total) print c"\t"total[c]"\t"count[c]"\t"(total[c]/gs)*100
         }}' {input.rm_out} | sort -k2,2nr >> {output.summary}
         """
 
@@ -514,7 +601,7 @@ rule landscape:
     shell:
         """
         mkdir -p $(dirname {output.html})
-        GENOME_SIZE=$(grep -v '^>' {input.genome} | tr -d '\\n' | wc -c)
+        GENOME_SIZE=$(grep -v '^>' {input.genome} | tr -d '\n' | wc -c)
         perl {params.rm_util}/calcDivergenceFromAlign.pl \
             -s {output.html}.divsum \
             {input.align}

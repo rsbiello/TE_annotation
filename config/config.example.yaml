@@ -5,7 +5,11 @@ genome: "/absolute/path/to/genome.fa"
 output_dir: "results"
 database_name: "species_RMdb"
 species_name: "Genus_species"
+
+# Any taxon understood by the installed Dfam/FamDB release, for example
+# "Aves", "Mammalia", "Actinopterygii", "Viridiplantae", or a species name.
 taxon: "Aves"
+
 # Optional; defaults to <species>_combined_curated_<taxon>.fa
 # final_library_name: "Genus_species_combined_repeats.fa"
 
@@ -23,6 +27,19 @@ tetools_image: "dfam/tetools:2.00"
 run_ltr_retriever: true
 run_trf: true
 generate_landscape: true
+
+# TRF is serial. The genome is divided into this many balanced FASTA chunks;
+# sequence records are never broken, so BED coordinates remain unchanged.
+# Increase for fragmented assemblies or larger clusters; maximum 256.
+trf_chunks: 32
+trf_parameters:
+  match: 2
+  mismatch: 5
+  delta: 7
+  pm: 80
+  pi: 10
+  minscore: 50
+  maxperiod: 2000
 
 # CD-HIT thresholds
 cdhit_identity_2d: 0.90
@@ -57,9 +74,15 @@ resources:
     mem_gb: 128
     time: "7-00:00:00"
     partition: "bigmem"
+  trf:
+    # TRF itself is single-threaded; parallelism comes from multiple chunks.
+    threads: 1
+    mem_gb: 8
+    time: "5-00:00:00"
+    partition: "standard"
   postprocess:
-    threads: 16
-    mem_gb: 32
+    threads: 1
+    mem_gb: 8
     time: "1-00:00:00"
     partition: "standard"
   light:

@@ -2,7 +2,7 @@ genome: "tests/data/genome.fa"
 output_dir: "tests/results"
 database_name: "test_RMdb"
 species_name: "Test_species"
-taxon: "Aves"
+taxon: "Eukaryota"
 famdb_script: "/bin/true"
 famdb_dir: "tests/data"
 protein_db: "tests/data/proteins.fa"
@@ -12,6 +12,15 @@ tetools_image: "dfam/tetools:2.00"
 run_ltr_retriever: false
 run_trf: false
 generate_landscape: false
+trf_chunks: 2
+trf_parameters:
+  match: 2
+  mismatch: 5
+  delta: 7
+  pm: 80
+  pi: 10
+  minscore: 50
+  maxperiod: 2000
 cdhit_identity_2d: 0.90
 cdhit_coverage_2d: 0.80
 cdhit_identity_self: 0.80
@@ -22,5 +31,6 @@ resources:
   ltr_retriever: {threads: 1, mem_gb: 1, time: "00:10:00", partition: "test"}
   cdhit: {threads: 1, mem_gb: 1, time: "00:10:00", partition: "test"}
   repeatmasker: {threads: 1, mem_gb: 1, time: "00:10:00", partition: "test"}
+  trf: {threads: 1, mem_gb: 1, time: "00:10:00", partition: "test"}
   postprocess: {threads: 1, mem_gb: 1, time: "00:10:00", partition: "test"}
   light: {threads: 1, mem_gb: 1, time: "00:10:00", partition: "test"}

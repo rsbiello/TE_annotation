@@ -1,9 +1,10 @@
 # TE_annotation
 
-`TE_annotation` is a Snakemake workflow for discovering, classifying, merging,
-and annotating transposable elements (TEs) in a eukaryotic genome. It combines
-de novo RepeatModeler families, structurally discovered LTR retrotransposons,
-and curated Dfam families before running a final RepeatMasker annotation.
+`TE_annotation` is a species-neutral Snakemake workflow for discovering,
+classifying, merging, and annotating transposable elements (TEs) in a
+eukaryotic genome. It combines de novo RepeatModeler families, structurally
+discovered LTR retrotransposons, and curated Dfam families before running a
+final RepeatMasker annotation.
 
 The workflow is designed for SLURM clusters but can also be executed with any
 Snakemake-compatible executor after adapting the resource configuration.
@@ -16,7 +17,7 @@ flowchart LR
     G --> LTR["LTRharvest + LTR_FINDER_parallel"]
     LTR --> RET["LTR_retriever"]
     RM --> CF["RepeatClassifier + protein-artifact filter"]
-    D["Curated Dfam families"] --> C2["CD-HIT-EST-2D"]
+    D["Curated Dfam families for configured taxon"] --> C2["CD-HIT-EST-2D"]
     CF --> M["Merge de novo and LTR libraries"]
     RET --> M
     M --> C2
@@ -26,7 +27,9 @@ flowchart LR
     CL --> RMA["RepeatMasker"]
     G --> RMA
     RMA --> P["BED, class summary, and landscape"]
-    G --> TRF["Tandem Repeats Finder BED"]
+    G --> TS["Balanced whole-sequence chunks"]
+    TS --> TJ["Parallel single-core TRF jobs"]
+    TJ --> TG["Merged tandem-repeat BED"]
 ```
 
 ## Requirements
@@ -47,7 +50,7 @@ the versioned `dfam/tetools:2.00` image.
 ## Installation
 
 ```bash
-git clone https://github.com/YOUR_GITHUB_USERNAME/TE_annotation.git
+git clone https://github.com/rsbiello/TE_annotation.git
 cd TE_annotation
 
 conda env create --file environment.yaml
@@ -59,7 +62,9 @@ cp config/config.example.yaml config/config.yaml
 Edit `config/config.yaml`, especially:
 
 - `genome`
-- `species_name`, `database_name`, and `taxon`
+- `species_name` and `database_name`
+- `taxon`: any taxon available in the installed Dfam release, such as
+  `Aves`, `Mammalia`, `Actinopterygii`, `Viridiplantae`, or a species name
 - `famdb_script` and `famdb_dir`
 - `protein_db`
 - `rm_util_dir`
@@ -68,9 +73,38 @@ Edit `config/config.yaml`, especially:
 The local `config/config.yaml` is ignored by Git so machine-specific paths are
 not published accidentally.
 
+## Parallel TRF execution
+
+TRF itself is single-threaded. The workflow therefore uses a scatter–gather
+stage:
+
+1. Scan the FASTA and calculate each sequence length.
+2. Assign complete sequence records to balanced chunks.
+3. Run one single-core TRF job for every chunk.
+4. Merge and sort the chunk BED files.
+
+Sequence records are never divided, so no artificial sequence boundaries are
+introduced and BED coordinates still refer directly to the original FASTA.
+Set the number of jobs with:
+
+```yaml
+trf_chunks: 32
+```
+
+Use fewer chunks on small clusters. Use more chunks for highly fragmented
+assemblies, up to the enforced maximum of 256. A chromosome remains intact;
+therefore an unusually large or repeat-rich chromosome can still be the last
+job to finish. Give each TRF chunk sufficient walltime while keeping
+`resources.trf.threads: 1`.
+
+The maximum number of jobs running simultaneously remains controlled by
+Snakemake's `--jobs` setting and by SLURM resource availability.
+
 ## Validate before running
 
 ```bash
+python -m unittest discover -s tests -v
+
 snakemake \
   --snakefile workflow/Snakefile \
   --configfile config/config.yaml \
@@ -141,7 +175,8 @@ All paths are relative to `output_dir`.
 | `03_repeatmasker_final/*.fa.out.gff` | RepeatMasker GFF output |
 | `04_postprocess/repeats.bed` | RepeatMasker calls converted to BED |
 | `04_postprocess/te_summary_by_class.tsv` | Hit count and annotated bases by TE class |
-| `04_postprocess/tandem_repeats.bed` | Optional tandem-repeat BED |
+| `04_postprocess/tandem_repeats.bed` | Optional merged tandem-repeat BED |
+| `04_postprocess/trf/manifest.tsv` | TRF chunk sizes and sequence counts |
 | `04_postprocess/repeat_landscape.html` | Optional Kimura-divergence landscape |
 
 ## Protein-artifact filtering
@@ -160,9 +195,16 @@ Snakefile (`1e-10`).
 ## Restarting and troubleshooting
 
 Snakemake retains valid completed outputs. After correcting a failed rule,
-remove only that rule's incomplete output directory and restart with
-`--rerun-incomplete`. SLURM rule logs are written to `logs/slurm/` by the
-provided profile.
+restart with `--rerun-incomplete`; do not delete completed RepeatModeler or
+RepeatMasker outputs.
+
+The new TRF scatter layout ignores `.dat` files left in the old
+`04_postprocess/trf/` directory, but preserving a failed directory is useful
+for diagnosis:
+
+```bash
+mv results/04_postprocess/trf results/04_postprocess/trf.failed.JOB_ID
+```
 
 Useful commands:
 
