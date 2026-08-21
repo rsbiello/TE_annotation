@@ -13,9 +13,11 @@ taxon: "Aves"
 # Optional; defaults to <species>_combined_curated_<taxon>.fa
 # final_library_name: "Genus_species_combined_repeats.fa"
 
-# External data and utilities
-famdb_script: "/absolute/path/to/FamDB/famdb.py"
-famdb_dir: "/absolute/path/to/FamDB/Libraries/famdb"
+# External data and utilities. See "Install FamDB and Dfam data" in README.md.
+# RepeatMasker's bundled famdb.py is recommended; famdb_dir contains the
+# downloaded Dfam .h5 root and curated-consensus partition files.
+famdb_script: "/absolute/path/to/RepeatMasker/famdb.py"
+famdb_dir: "/absolute/path/to/dfam/FamDB"
 protein_db: "/absolute/path/to/uniprot_sprot.fasta"
 rm_util_dir: "/absolute/path/to/RepeatMasker/util"
 

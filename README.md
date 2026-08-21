@@ -59,6 +59,50 @@ conda activate te-annotation-snakemake
 cp config/config.example.yaml config/config.yaml
 ```
 
+### Install FamDB and Dfam data
+
+The workflow uses `famdb.py` to export curated Dfam consensus sequences for the
+configured taxon. RepeatMasker includes a compatible copy of `famdb.py`, which
+is the recommended version to use. If it is unavailable, download a release
+from the [FamDB releases page](https://github.com/Dfam-consortium/FamDB/releases/latest).
+
+The program and database are separate:
+
+- `famdb_script` is the complete path to `famdb.py`.
+- `famdb_dir` is the directory containing the downloaded Dfam `.h5` files.
+
+Download the root file and the curated-consensus (`cc`) partitions needed for
+your taxon from the [current Dfam FamDB release](https://www.dfam.org/releases/current/families/FamDB/).
+The root file and all partition files must come from the same Dfam release and
+must be placed together in one directory. Partition 0 is required; additional
+partitions depend on the taxonomic lineage. Curated-consensus partitions are
+sufficient for this workflow because it exports curated families in FASTA
+format.
+
+For example, an installation might be configured as:
+
+```yaml
+famdb_script: "/software/RepeatMasker/famdb.py"
+famdb_dir: "/data/dfam/current/FamDB"
+taxon: "Mammalia"
+```
+
+Check the installation and identify missing partitions before starting the
+workflow:
+
+```bash
+FAMDB_SCRIPT=/software/RepeatMasker/famdb.py
+FAMDB_DIR=/data/dfam/current/FamDB
+
+python "$FAMDB_SCRIPT" -i "$FAMDB_DIR" info
+python "$FAMDB_SCRIPT" -i "$FAMDB_DIR" names "Mammalia"
+python "$FAMDB_SCRIPT" -i "$FAMDB_DIR" check "Mammalia"
+```
+
+Replace `Mammalia` with the species, clade, common name, or NCBI taxonomy ID
+that will be used as `taxon`. The `check` command reports which locally missing
+partition files are required for that query.
+
 Edit `config/config.yaml`, especially:
 
 - `genome`
