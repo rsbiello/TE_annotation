@@ -18,6 +18,7 @@ taxon: "Aves"
 # downloaded Dfam .h5 root and curated-consensus partition files.
 famdb_script: "/absolute/path/to/RepeatMasker/famdb.py"
 famdb_dir: "/absolute/path/to/dfam/FamDB"
+# Uncompressed protein FASTA; see "Download the protein database" in README.md.
 protein_db: "/absolute/path/to/uniprot_sprot.fasta"
 rm_util_dir: "/absolute/path/to/RepeatMasker/util"
 
