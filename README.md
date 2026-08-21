@@ -109,8 +109,8 @@ The `protein_db` input is a protein FASTA used by BLASTx to identify
 RepeatModeler families that are more likely to be host-protein artifacts than
 transposable elements. The recommended general-purpose database is the
 reviewed, manually curated [UniProtKB/Swiss-Prot](https://www.uniprot.org/help/uniprotkb)
-collection. UniProt recommends its FTP service for downloading complete data
-sets.
+collection. The command below downloads the complete FASTA from UniProt's
+EMBL-EBI mirror.
 
 Download and decompress the current Swiss-Prot FASTA on the cluster or another
 machine with sufficient storage:
@@ -120,9 +120,8 @@ PROTEIN_DB_DIR=/data/uniprot/swissprot
 mkdir -p "$PROTEIN_DB_DIR"
 cd "$PROTEIN_DB_DIR"
 
-curl -L \
-  -o uniprot_sprot.fasta.gz \
-  https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz
+wget --continue \
+  https://ftp.ebi.ac.uk/pub/databases/uniprot/knowledgebase/uniprot_sprot.fasta.gz
 
 gzip -t uniprot_sprot.fasta.gz
 gzip -dc uniprot_sprot.fasta.gz > uniprot_sprot.fasta
@@ -136,8 +135,8 @@ protein_db: "/data/uniprot/swissprot/uniprot_sprot.fasta"
 ```
 
 The workflow runs `makeblastdb` itself; do not provide prebuilt BLAST database
-files. The `current_release` URL changes when UniProt publishes a new release,
-so record the download date and a checksum for reproducible analyses. A custom
+files. The mirror file changes when UniProt publishes a new release, so record
+the download date and a checksum for reproducible analyses. A custom
 protein FASTA may be used instead, but its taxonomic scope and annotation
 quality will affect which candidate families are removed. Always inspect
 `removed_artifacts.tsv` before accepting the filtered repeat library.
