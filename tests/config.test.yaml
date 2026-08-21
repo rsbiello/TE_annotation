@@ -10,6 +10,7 @@ rm_util_dir: "/tmp"
 container_runtime: "docker"
 tetools_image: "dfam/tetools:2.00"
 run_ltr_retriever: false
+repeatmodeler_ltr_struct: true
 run_trf: false
 generate_landscape: false
 trf_chunks: 2

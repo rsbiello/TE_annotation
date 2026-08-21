@@ -14,7 +14,7 @@ def slurm_res(key):
         "partition": cfg["partition"],
     }
     # Optional site-specific constraint. The public SLURM profile does not
-    # require this, while private Jarvis configurations may set mark7 here.
+    # require this, while a local cluster configuration may set a node list.
     if cfg.get("nodelist"):
         resources["nodelist"] = cfg["nodelist"]
     return resources
@@ -57,6 +57,9 @@ FINAL_LIBRARY_NAME = config.get(
 )
 TETOOLS_IMAGE = config["tetools_image"].removeprefix("docker://")
 CONTAINER_RUNTIME = config.get("container_runtime", "docker")
+REPEATMODELER_LTR_OPTION = (
+    "-LTRStruct" if config.get("repeatmodeler_ltr_struct", True) else ""
+)
 
 TRF_ROOT = f"{OUTDIR}/04_postprocess/trf"
 TRF_CHUNKS = int(config.get("trf_chunks", 32))
@@ -104,7 +107,8 @@ rule repeatmodeler:
         db   = DB_NAME,
         odir = f"{OUTDIR}/01_repeatmodeler",
         image = TETOOLS_IMAGE,
-        runtime = CONTAINER_RUNTIME
+        runtime = CONTAINER_RUNTIME,
+        ltr_option = REPEATMODELER_LTR_OPTION
     threads: config["resources"]["repeatmodeler"]["threads"]
     resources:
         **slurm_res("repeatmodeler")
@@ -130,7 +134,7 @@ rule repeatmodeler:
             bash -c 'set -euo pipefail; \
                 RepeatModeler -version; \
                 BuildDatabase -name "{params.db}" "/genome/$RM_GENOME_FILE"; \
-                RepeatModeler -database "{params.db}" -threads "{threads}" -LTRStruct'
+                RepeatModeler -database "{params.db}" -threads "{threads}" {params.ltr_option}'
         """
 
 # ============================================================================
@@ -155,9 +159,10 @@ rule classify_filter:
         """
         mkdir -p {params.odir}
 
-        # Classify
-        RepeatClassifier -consensi {input.families} -threads {threads}
-        CLASSIFIED={input.families}.classified
+        # RepeatModeler produces an already classified families library. Avoid
+        # reclassifying it in a separate environment with a potentially
+        # incomplete RepeatMasker/Dfam installation.
+        CLASSIFIED={input.families}
 
         # BLASTx vs proteins
         makeblastdb -in {input.protein_db} -dbtype prot -out {params.odir}/protdb -parse_seqids
@@ -298,6 +303,7 @@ rule merge_ltr:
         **slurm_res("light")
     run:
         import shutil
+        Path(output.merged).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(input.denovo, output.merged)
         if config.get("run_ltr_retriever", False):
             ltr_path = str(input.ltr)

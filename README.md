@@ -16,7 +16,7 @@ flowchart LR
     G["Genome FASTA"] --> RM["RepeatModeler"]
     G --> LTR["LTRharvest + LTR_FINDER_parallel"]
     LTR --> RET["LTR_retriever"]
-    RM --> CF["RepeatClassifier + protein-artifact filter"]
+    RM --> CF["Protein-artifact filter"]
     D["Curated Dfam families for configured taxon"] --> C2["CD-HIT-EST-2D"]
     CF --> M["Merge de novo and LTR libraries"]
     RET --> M
@@ -69,6 +69,26 @@ Edit `config/config.yaml`, especially:
 - `protein_db`
 - `rm_util_dir`
 - partition names, resource limits, and wall times
+
+RepeatModeler performs family classification itself. The workflow therefore
+uses its `*-families.fa` output directly for protein-artifact filtering instead
+of running RepeatClassifier a second time in a separate environment.
+
+## LTR discovery modes
+
+The default configuration enables RepeatModeler's integrated structural LTR
+pipeline and disables the additional standalone LTR_retriever branch:
+
+```yaml
+repeatmodeler_ltr_struct: true
+run_ltr_retriever: false
+```
+
+This is the recommended balance for routine multi-species annotation. Set
+`run_ltr_retriever: true` when an additional independent search using
+LTRharvest and LTR_FINDER_parallel is worth the extra runtime. Set
+`repeatmodeler_ltr_struct: false` only when intentionally disabling the
+integrated RepeatModeler LTR analysis.
 
 The local `config/config.yaml` is ignored by Git so machine-specific paths are
 not published accidentally.
@@ -155,6 +175,11 @@ environment:
 ```bash
 sbatch slurm/controller.sbatch
 ```
+
+The profile uses `workflow/scripts/slurm_status.py` to query both `squeue` and
+`sacct`. This allows Snakemake to distinguish successful jobs from failures,
+timeouts, cancellations, and out-of-memory termination. It also configures
+`scancel` so that Snakemake can cancel submitted jobs during shutdown.
 
 Cluster-specific node restrictions should be added locally to the SLURM
 profile. They are deliberately not hardcoded in the public workflow.

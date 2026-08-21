@@ -23,8 +23,11 @@ rm_util_dir: "/absolute/path/to/RepeatMasker/util"
 container_runtime: "docker"
 tetools_image: "dfam/tetools:2.00"
 
-# Optional branches
-run_ltr_retriever: true
+# Optional branches. RepeatModeler already performs structural LTR discovery by
+# default. Enable the separate LTR_retriever branch only for an additional,
+# independent structural search.
+repeatmodeler_ltr_struct: true
+run_ltr_retriever: false
 run_trf: true
 generate_landscape: true
 
