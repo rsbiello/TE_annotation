@@ -1,0 +1,10 @@
+name: te_repeatmodeler
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - repeatmodeler =2.0.9
+  - repeatmasker =4.2.4
+  - famdb =3.0.0
+  # RepeatModeler 2.0.9's configuration checks specifically for v2.9.0.
+  - ltr_retriever =2.9.0

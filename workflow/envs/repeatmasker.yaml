@@ -3,7 +3,7 @@ channels:
   - conda-forge
   - bioconda
 dependencies:
-  - repeatmasker >=4.1.5
+  - repeatmasker =4.2.4
+  - famdb =3.0.0
   - cd-hit >=4.8.1
-  - blast >=2.14
   - python >=3.10

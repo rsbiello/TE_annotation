@@ -13,18 +13,13 @@ taxon: "Aves"
 # Optional; defaults to <species>_combined_curated_<taxon>.fa
 # final_library_name: "Genus_species_combined_repeats.fa"
 
-# External data and utilities. See "Install FamDB and Dfam data" in README.md.
-# RepeatMasker's bundled famdb.py is recommended; famdb_dir contains the
-# downloaded Dfam .h5 root and curated-consensus partition files.
-famdb_script: "/absolute/path/to/RepeatMasker/famdb.py"
+# External data. All executable software, including famdb.py and the
+# RepeatMasker utilities, is supplied by the rule-specific Conda environments.
+# This directory contains the downloaded Dfam .h5 root and all curated-
+# consensus partition files required by RepeatModeler 2.0.9.
 famdb_dir: "/absolute/path/to/dfam/FamDB"
 # Uncompressed protein FASTA; see "Download the protein database" in README.md.
 protein_db: "/absolute/path/to/uniprot_sprot.fasta"
-rm_util_dir: "/absolute/path/to/RepeatMasker/util"
-
-# RepeatModeler container. Docker and Podman use the same command shape here.
-container_runtime: "docker"
-tetools_image: "dfam/tetools:2.00"
 
 # Optional branches. RepeatModeler already performs structural LTR discovery by
 # default. Enable the separate LTR_retriever branch only for an additional,

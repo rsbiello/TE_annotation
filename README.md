@@ -37,15 +37,14 @@ flowchart LR
 - Linux
 - Snakemake 9
 - Conda or Mamba
-- Docker or Podman for the RepeatModeler container
 - SLURM and the `cluster-generic` executor plugin for cluster execution
-- A local [FamDB](https://github.com/Dfam-consortium/FamDB) installation and
-  downloaded Dfam FamDB partitions
+- Downloaded Dfam FamDB data files
 - A protein FASTA database, such as reviewed UniProt/Swiss-Prot proteins
 
 The workflow-specific command-line tools are installed from the YAML files in
-`workflow/envs/`. The RepeatModeler container is configurable and defaults to
-the versioned `dfam/tetools:2.00` image.
+`workflow/envs/`; Docker, Podman, and manual RepeatMasker/RepeatModeler
+installations are not required. The principal versions are pinned to
+RepeatModeler 2.0.9, RepeatMasker 4.2.4, and FamDB 3.0.0.
 
 ## Installation
 
@@ -62,41 +61,53 @@ cp config/config.example.yaml config/config.yaml
 ### Install FamDB and Dfam data
 
 The workflow uses `famdb.py` to export curated Dfam consensus sequences for the
-configured taxon. RepeatMasker includes a compatible copy of `famdb.py`, which
-is the recommended version to use. If it is unavailable, download a release
-from the [FamDB releases page](https://github.com/Dfam-consortium/FamDB/releases/latest).
+configured taxon and to classify RepeatModeler families. The executable is
+installed automatically from Bioconda; only the large Dfam data files remain
+external to the Conda environments.
 
-The program and database are separate:
-
-- `famdb_script` is the complete path to `famdb.py`.
-- `famdb_dir` is the directory containing the downloaded Dfam `.h5` files.
-
-Download the root file and the curated-consensus (`cc`) partitions needed for
-your taxon from the [current Dfam FamDB release](https://www.dfam.org/releases/current/families/FamDB/).
-The root file and all partition files must come from the same Dfam release and
-must be placed together in one directory. Partition 0 is required; additional
-partitions depend on the taxonomic lineage. Curated-consensus partitions are
-sufficient for this workflow because it exports curated families in FASTA
-format.
-
-For example, an installation might be configured as:
+Set `famdb_dir` to the directory containing the downloaded Dfam `.h5` files:
 
 ```yaml
-famdb_script: "/software/RepeatMasker/famdb.py"
-famdb_dir: "/data/dfam/current/FamDB"
+famdb_dir: "/data/dfam/4.0/FamDB"
 taxon: "Mammalia"
 ```
 
-Check the installation and identify missing partitions before starting the
-workflow:
+Download the root file and all curated-consensus (`cc`) partitions from the
+[current Dfam FamDB release](https://www.dfam.org/releases/current/families/FamDB/).
+The root file and all partition files must come from the same Dfam release and
+must be placed together in one directory. RepeatModeler 2.0.9 checks the
+completeness of the curated reference library during family classification, so
+downloading only the partitions for the configured taxon is not sufficient.
+Curated HMM and uncurated partitions are not used by this workflow.
+
+For Dfam 4.0, the complete curated-consensus dataset consists of the root and
+one curated-consensus file. For example:
 
 ```bash
-FAMDB_SCRIPT=/software/RepeatMasker/famdb.py
-FAMDB_DIR=/data/dfam/current/FamDB
+DFAM_DIR=/data/dfam/4.0/FamDB
+DFAM_URL=https://www.dfam.org/releases/Dfam_4.0/families/FamDB
+mkdir -p "$DFAM_DIR"
+cd "$DFAM_DIR"
 
-python "$FAMDB_SCRIPT" -i "$FAMDB_DIR" info
-python "$FAMDB_SCRIPT" -i "$FAMDB_DIR" names "Mammalia"
-python "$FAMDB_SCRIPT" -i "$FAMDB_DIR" check "Mammalia"
+wget --continue "$DFAM_URL/dfam40.0.h5.gz"
+wget --continue "$DFAM_URL/dfam40.curated.consensus.0.h5.gz"
+gzip -t dfam40.0.h5.gz dfam40.curated.consensus.0.h5.gz
+gunzip dfam40.0.h5.gz dfam40.curated.consensus.0.h5.gz
+```
+
+Record the Dfam release and checksums used for each analysis. When deliberately
+upgrading Dfam, update the URL and filenames together and rebuild the
+Snakemake environments if the new release requires newer software.
+
+After creating and activating `environment.yaml`, check the data and identify
+missing partitions before starting the workflow:
+
+```bash
+FAMDB_DIR=/data/dfam/4.0/FamDB
+
+famdb.py -i "$FAMDB_DIR" info
+famdb.py -i "$FAMDB_DIR" names "Mammalia"
+famdb.py -i "$FAMDB_DIR" check --component cc "Mammalia"
 ```
 
 Replace `Mammalia` with the species, clade, common name, or NCBI taxonomy ID
@@ -147,9 +158,8 @@ Edit `config/config.yaml`, especially:
 - `species_name` and `database_name`
 - `taxon`: any taxon available in the installed Dfam release, such as
   `Aves`, `Mammalia`, `Actinopterygii`, `Viridiplantae`, or a species name
-- `famdb_script` and `famdb_dir`
+- `famdb_dir`
 - `protein_db`
-- `rm_util_dir`
 - partition names, resource limits, and wall times
 
 RepeatModeler performs family classification itself. The workflow therefore
@@ -266,6 +276,11 @@ timeouts, cancellations, and out-of-memory termination. It also configures
 Cluster-specific node restrictions should be added locally to the SLURM
 profile. They are deliberately not hardcoded in the public workflow.
 
+All workflow tools run in Snakemake-managed Conda environments. When an
+environment YAML changes, Snakemake creates a new content-addressed environment
+under `--conda-prefix`; it does not require updating a system-wide
+RepeatModeler or RepeatMasker installation.
+
 ## Main outputs
 
 All paths are relative to `output_dir`.
@@ -343,4 +358,4 @@ and UniProt where applicable. See `CITATION.cff` for repository metadata.
 ## License
 
 The workflow code is released under the [MIT License](LICENSE). External tools,
-containers, and databases retain their own licenses and terms.
+Conda packages, and databases retain their own licenses and terms.

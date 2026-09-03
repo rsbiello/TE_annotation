@@ -55,8 +55,6 @@ FINAL_LIBRARY_NAME = config.get(
     "final_library_name",
     f"{SPECIES_NAME}_combined_curated_{TAXON_NAME}.fa",
 )
-TETOOLS_IMAGE = config["tetools_image"].removeprefix("docker://")
-CONTAINER_RUNTIME = config.get("container_runtime", "docker")
 REPEATMODELER_LTR_OPTION = (
     "-LTRStruct" if config.get("repeatmodeler_ltr_struct", True) else ""
 )
@@ -95,46 +93,104 @@ rule all:
         FINAL
 
 # ============================================================================
-# 01 DE NOVO DISCOVERY (RepeatModeler via Docker/Podman)
+# 00 INPUT DATABASE VALIDATION
+# ============================================================================
+
+rule validate_famdb:
+    output:
+        ok = f"{OUTDIR}/00_preflight/famdb.ok"
+    params:
+        famdb_dir = config["famdb_dir"],
+        taxon     = TAXON
+    resources:
+        **slurm_res("light")
+    conda:
+        "envs/repeatmasker.yaml"
+    shell:
+        """
+        set -euo pipefail
+        mkdir -p $(dirname {output.ok:q})
+
+        FAMDB_INFO=$(famdb.py -i {params.famdb_dir:q} info)
+        printf '%s\n' "$FAMDB_INFO"
+
+        CONSENSUS_COUNT=$(printf '%s\n' "$FAMDB_INFO" | \
+            awk -F: '/Total consensus sequences present/ {{gsub(/[^0-9]/, "", $2); print $2; exit}}')
+        if [[ ! "$CONSENSUS_COUNT" =~ ^[0-9]+$ ]] || (( CONSENSUS_COUNT < 26200 )); then
+            echo "ERROR: RepeatModeler 2.0.9 requires a complete curated-consensus FamDB dataset." >&2
+            echo "Found only ${{CONSENSUS_COUNT:-0}} consensus sequences in {params.famdb_dir}." >&2
+            exit 1
+        fi
+
+        REPEATPEPS_COUNT=$(famdb.py -i {params.famdb_dir:q} repeatpeps | \
+            grep -c '^>' || true)
+        if (( REPEATPEPS_COUNT == 0 )); then
+            echo "ERROR: the FamDB root file contains no RepeatPeps protein library." >&2
+            exit 1
+        fi
+
+        famdb.py -i {params.famdb_dir:q} names {params.taxon:q}
+        famdb.py -i {params.famdb_dir:q} check --component cc {params.taxon:q}
+        touch {output.ok:q}
+        """
+
+# ============================================================================
+# 01 DE NOVO DISCOVERY (RepeatModeler via Conda)
 # ============================================================================
 
 rule repeatmodeler:
     input:
-        genome = GENOME
+        genome = GENOME,
+        famdb_ok = rules.validate_famdb.output.ok
     output:
         families = f"{OUTDIR}/01_repeatmodeler/{DB_NAME}-families.fa"
     params:
-        db   = DB_NAME,
-        odir = f"{OUTDIR}/01_repeatmodeler",
-        image = TETOOLS_IMAGE,
-        runtime = CONTAINER_RUNTIME,
+        db         = DB_NAME,
+        odir       = f"{OUTDIR}/01_repeatmodeler",
+        famdb_data = config["famdb_dir"],
         ltr_option = REPEATMODELER_LTR_OPTION
     threads: config["resources"]["repeatmodeler"]["threads"]
     resources:
         **slurm_res("repeatmodeler")
+    conda:
+        "envs/repeatmodeler.yaml"
     shell:
         """
-        mkdir -p {params.odir}
-        GENOME_ABS=$(readlink -f {input.genome})
-        GENOME_DIR=$(dirname $GENOME_ABS)
-        GENOME_FILE=$(basename $GENOME_ABS)
-        OUT_ABS=$(readlink -f {params.odir})
+        set -euo pipefail
+        mkdir -p {params.odir:q}
 
-        {params.runtime} run --rm \
-            --user $(id -u):$(id -g) \
-            -e HOME=/tmp \
-            -e BLAST_USAGE_REPORT=false \
-            -e RM_DATABASE={params.db} \
-            -e RM_THREADS={threads} \
-            -e RM_GENOME_FILE=$GENOME_FILE \
-            -v $GENOME_DIR:/genome:ro \
-            -v $OUT_ABS:/output \
-            -w /output \
-            {params.image} \
-            bash -c 'set -euo pipefail; \
-                RepeatModeler -version; \
-                BuildDatabase -name "{params.db}" "/genome/$RM_GENOME_FILE"; \
-                RepeatModeler -database "{params.db}" -threads "{threads}" {params.ltr_option}'
+        GENOME_ABS=$(readlink -f {input.genome:q})
+        OUT_ABS=$(readlink -f {params.odir:q})
+        FAMDB_DATA_ABS=$(readlink -f {params.famdb_data:q})
+        FAMDB_EXE=$(command -v famdb.py || true)
+
+        if [[ -z "$FAMDB_EXE" ]]; then
+            echo "ERROR: the Conda RepeatModeler environment has no famdb.py" >&2
+            exit 1
+        fi
+
+        # RepeatModeler expects FAMDB_DIR to contain famdb.py, whereas this
+        # workflow keeps the large Dfam .h5 files outside the Conda environment.
+        # A job-local wrapper connects the Conda executable to those data files
+        # without modifying the shared, content-addressed Snakemake environment.
+        FAMDB_WRAPPER_DIR="$OUT_ABS/.famdb-wrapper"
+        mkdir -p "$FAMDB_WRAPPER_DIR"
+        printf '#!/usr/bin/env bash\nexec %q -i %q "$@"\n' \
+            "$FAMDB_EXE" "$FAMDB_DATA_ABS" \
+            > "$FAMDB_WRAPPER_DIR/famdb.py"
+        chmod 0755 "$FAMDB_WRAPPER_DIR/famdb.py"
+
+        export BLAST_USAGE_REPORT=false
+        RepeatMasker -v
+        RepeatModeler -version
+
+        cd "$OUT_ABS"
+        BuildDatabase -name {params.db:q} "$GENOME_ABS"
+        RepeatModeler \
+            -database {params.db:q} \
+            -threads {threads} \
+            -famdb_dir "$FAMDB_WRAPPER_DIR" \
+            {params.ltr_option}
         """
 
 # ============================================================================
@@ -265,10 +321,11 @@ rule ltr_retriever:
 # ============================================================================
 
 rule export_dfam:
+    input:
+        famdb_ok = rules.validate_famdb.output.ok
     output:
         curated = f"{OUTDIR}/02_library/{TAXON_NAME}_Dfam_curated_all.fa"
     params:
-        famdb_script = config["famdb_script"],
         famdb_dir  = config["famdb_dir"],
         taxon      = TAXON
     resources:
@@ -278,10 +335,15 @@ rule export_dfam:
     shell:
         """
         mkdir -p $(dirname {output.curated})
-        python3 {params.famdb_script} \
-            -i {params.famdb_dir} \
+        famdb.py \
+            -i {params.famdb_dir:q} \
             families -c -a -d -f fasta_name --include-class-in-name \
-            {params.taxon} > {output.curated}
+            {params.taxon:q} > {output.curated:q}
+
+        if [[ ! -s {output.curated:q} ]]; then
+            echo "ERROR: FamDB exported no curated families for {params.taxon}" >&2
+            exit 1
+        fi
         """
 
 # ============================================================================
@@ -597,8 +659,6 @@ rule landscape:
         genome = GENOME
     output:
         html = f"{OUTDIR}/04_postprocess/repeat_landscape.html"
-    params:
-        rm_util = config["rm_util_dir"]
     threads: 1
     resources:
         **slurm_res("postprocess")
@@ -608,10 +668,10 @@ rule landscape:
         """
         mkdir -p $(dirname {output.html})
         GENOME_SIZE=$(grep -v '^>' {input.genome} | tr -d '\n' | wc -c)
-        perl {params.rm_util}/calcDivergenceFromAlign.pl \
+        calcDivergenceFromAlign.pl \
             -s {output.html}.divsum \
             {input.align}
-        perl {params.rm_util}/createRepeatLandscape.pl \
+        createRepeatLandscape.pl \
             -div {output.html}.divsum \
             -g $GENOME_SIZE \
             > {output.html}

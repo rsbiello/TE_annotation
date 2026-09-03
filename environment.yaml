@@ -5,3 +5,5 @@ channels:
 dependencies:
   - snakemake-minimal =9.24.0
   - snakemake-executor-plugin-cluster-generic
+  # Also makes famdb.py available for the setup checks documented in README.md.
+  - famdb =3.0.0
