@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Split a FASTA into balanced chunks without splitting sequence records."""
 
-from __future__ import annotations
-
 import argparse
 import gzip
 from contextlib import ExitStack

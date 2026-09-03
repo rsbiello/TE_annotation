@@ -32,6 +32,15 @@ class CondaConfigurationTests(unittest.TestCase):
         for term in ("docker", "podman", "tetools", "container_runtime"):
             self.assertNotIn(term, snakefile)
 
+    def test_famdb_repeat_peps_subcommand(self):
+        snakefile = (ROOT / "workflow" / "Snakefile").read_text()
+        self.assertIn(" repeat_peps |", snakefile)
+        self.assertNotIn(" repeatpeps |", snakefile)
+
+    def test_snakemake_script_has_no_future_import(self):
+        script = (ROOT / "workflow" / "scripts" / "split_fasta.py").read_text()
+        self.assertNotIn("from __future__ import", script)
+
 
 if __name__ == "__main__":
     unittest.main()

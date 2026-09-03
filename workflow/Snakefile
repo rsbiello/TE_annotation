@@ -122,7 +122,7 @@ rule validate_famdb:
             exit 1
         fi
 
-        REPEATPEPS_COUNT=$(famdb.py -i {params.famdb_dir:q} repeatpeps | \
+        REPEATPEPS_COUNT=$(famdb.py -i {params.famdb_dir:q} repeat_peps | \
             grep -c '^>' || true)
         if (( REPEATPEPS_COUNT == 0 )); then
             echo "ERROR: the FamDB root file contains no RepeatPeps protein library." >&2
