@@ -482,8 +482,9 @@ rule repeatmasker:
         tbl    = f"{OUTDIR}/03_repeatmasker_final/{GENOME_NAME}.tbl",
         align  = f"{OUTDIR}/03_repeatmasker_final/{GENOME_NAME}.align"
     params:
-        odir = f"{OUTDIR}/03_repeatmasker_final",
-        pa   = lambda wc, threads: max(1, threads // 4)
+        odir       = f"{OUTDIR}/03_repeatmasker_final",
+        famdb_data = config["famdb_dir"],
+        pa         = lambda wc, threads: max(1, threads // 4)
     threads: config["resources"]["repeatmasker"]["threads"]
     resources:
         **slurm_res("repeatmasker")
@@ -494,9 +495,30 @@ rule repeatmasker:
         set -euo pipefail
         export LC_ALL=C
         mkdir -p {params.odir:q}
+
+        OUT_ABS=$(readlink -f {params.odir:q})
+        FAMDB_DATA_ABS=$(readlink -f {params.famdb_data:q})
+        FAMDB_EXE=$(command -v famdb.py || true)
+
+        if [[ -z "$FAMDB_EXE" ]]; then
+            echo "ERROR: the Conda RepeatMasker environment has no famdb.py" >&2
+            exit 1
+        fi
+
+        # RepeatMasker's -famdb_dir option expects a directory containing
+        # famdb.py, not the directory containing the Dfam .h5 files. Connect
+        # the Conda executable to the external data with a job-local wrapper.
+        FAMDB_WRAPPER_DIR="$OUT_ABS/.famdb-wrapper"
+        mkdir -p "$FAMDB_WRAPPER_DIR"
+        printf '#!/usr/bin/env bash\nexec %q -i %q "$@"\n' \
+            "$FAMDB_EXE" "$FAMDB_DATA_ABS" \
+            > "$FAMDB_WRAPPER_DIR/famdb.py"
+        chmod 0755 "$FAMDB_WRAPPER_DIR/famdb.py"
+
         RepeatMasker \
             -gff -s -xsmall -align \
             -pa {params.pa} \
+            -famdb_dir "$FAMDB_WRAPPER_DIR" \
             -lib {input.library:q} \
             -dir {params.odir:q} \
             {input.genome:q}
