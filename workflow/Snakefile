@@ -482,9 +482,8 @@ rule repeatmasker:
         tbl    = f"{OUTDIR}/03_repeatmasker_final/{GENOME_NAME}.tbl",
         align  = f"{OUTDIR}/03_repeatmasker_final/{GENOME_NAME}.align"
     params:
-        odir      = f"{OUTDIR}/03_repeatmasker_final",
-        famdb     = config["famdb_dir"],
-        pa        = lambda wc, threads: max(1, threads // 4)
+        odir = f"{OUTDIR}/03_repeatmasker_final",
+        pa   = lambda wc, threads: max(1, threads // 4)
     threads: config["resources"]["repeatmasker"]["threads"]
     resources:
         **slurm_res("repeatmasker")
@@ -492,14 +491,15 @@ rule repeatmasker:
         "envs/repeatmasker.yaml"
     shell:
         """
-        mkdir -p {params.odir}
+        set -euo pipefail
+        export LC_ALL=C
+        mkdir -p {params.odir:q}
         RepeatMasker \
             -gff -s -xsmall -align \
             -pa {params.pa} \
-            -famdb_dir {params.famdb} \
-            -lib {input.library} \
-            -dir {params.odir} \
-            {input.genome}
+            -lib {input.library:q} \
+            -dir {params.odir:q} \
+            {input.genome:q}
         """
 
 # ============================================================================

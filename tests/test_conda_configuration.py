@@ -41,6 +41,14 @@ class CondaConfigurationTests(unittest.TestCase):
         script = (ROOT / "workflow" / "scripts" / "split_fasta.py").read_text()
         self.assertNotIn("from __future__ import", script)
 
+    def test_repeatmasker_custom_library_does_not_configure_famdb(self):
+        snakefile = (ROOT / "workflow" / "Snakefile").read_text()
+        repeatmasker_rule = snakefile.split("rule repeatmasker:", 1)[1].split(
+            "# 04A TANDEM REPEATS FINDER", 1
+        )[0]
+        self.assertIn("-lib {input.library:q}", repeatmasker_rule)
+        self.assertNotIn("-famdb_dir", repeatmasker_rule)
+
 
 if __name__ == "__main__":
     unittest.main()
