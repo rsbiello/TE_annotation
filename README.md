@@ -14,9 +14,11 @@ Snakemake-compatible executor after adapting the resource configuration.
 ```mermaid
 flowchart LR
     G["Genome FASTA"] --> RM["RepeatModeler"]
+    RM --> EX["Reviewed family exclusions"]
+    EX --> TT["TEtrimmer consensus curation"]
     G --> LTR["LTRharvest + LTR_FINDER_parallel"]
     LTR --> RET["LTR_retriever"]
-    RM --> CF["Protein-artifact filter"]
+    TT --> CF["Protein-artifact filter"]
     D["Curated Dfam families for configured taxon"] --> C2["CD-HIT-EST-2D"]
     CF --> M["Merge de novo and LTR libraries"]
     RET --> M
@@ -27,6 +29,7 @@ flowchart LR
     CL --> RMA["RepeatMasker"]
     G --> RMA
     RMA --> P["BED, class summary, and landscape"]
+    RMA --> QC["Per-family coverage QC gate"]
     G --> TS["Balanced whole-sequence chunks"]
     TS --> TJ["Parallel single-core TRF jobs"]
     TJ --> TG["Merged tandem-repeat BED"]
@@ -162,9 +165,85 @@ Edit `config/config.yaml`, especially:
 - `protein_db`
 - partition names, resource limits, and wall times
 
-RepeatModeler performs family classification itself. The workflow therefore
-uses its `*-families.fa` output directly for protein-artifact filtering instead
-of running RepeatClassifier a second time in a separate environment.
+RepeatModeler performs initial family classification itself. The workflow uses
+that classified library, optionally after TEtrimmer curation, for
+protein-artifact filtering instead of running a separate redundant
+RepeatClassifier stage.
+
+## Repeat-family curation and QC
+
+RepeatModeler produces candidate family consensuses. For publication-quality
+annotations, enable TEtrimmer so candidate boundaries are rebuilt from genomic
+copies before the final library is constructed:
+
+```yaml
+run_tetrimmer: true
+```
+
+TEtrimmer is installed in its own Snakemake Conda environment and writes the
+curated, deduplicated library to
+`01a_tetrimmer/TEtrimmer_consensus_merged.fasta`. RepeatModeler has already
+classified the input, so this workflow does not ask TEtrimmer to rerun
+RepeatClassifier. TEtrimmer may download Pfam data on first use. If compute
+nodes cannot access the network, prepare a shared Pfam directory and configure
+it explicitly:
+
+```yaml
+tetrimmer_pfam_dir: "/data/pfam"
+```
+
+The directory is created automatically and can be shared by all species. This
+avoids downloading the same database into each analysis or into a
+content-addressed Conda environment.
+
+TEtrimmer adds substantial computation, so `run_tetrimmer` defaults to `false`
+when the key is absent for compatibility with older configs. It is recommended
+for new production annotations. The raw RepeatModeler library remains
+available for provenance.
+
+Confirmed artifacts can be removed reproducibly before TEtrimmer and all
+downstream library steps:
+
+```yaml
+exclude_families:
+  - rnd-5_family-23649
+```
+
+Names refer to the RepeatModeler identifier before the `#class` suffix. Missing
+or misspelled names stop the workflow rather than being ignored. The report
+`01a_manual_curated/repeatmodeler_exclusions.tsv` records every removed
+consensus.
+
+TEtrimmer can rename or split a RepeatModeler family. To exclude a family by
+its name in `TEtrimmer_consensus_merged.fasta`, use the post-curation list:
+
+```yaml
+exclude_curated_families:
+  - output_family_name
+```
+
+Use `01a_tetrimmer/summary.txt` to map an output name back to its RepeatModeler
+input name when you want to exclude it before curation. Post-curation removals
+are recorded in `01a_manual_curated/post_curation_exclusions.tsv`.
+
+After RepeatMasker, the workflow calculates non-overlapping coverage for every
+family and stops when one de novo family exceeds the configured fraction of
+the genome:
+
+```yaml
+family_qc:
+  max_genome_percent_per_family: 5.0
+  fail_on_excess: true
+  allow_high_coverage_families: []
+```
+
+The QC gate never deletes a family automatically. Inspect
+`04_postprocess/flagged_families.tsv`; add a confirmed composite or host-derived
+artifact to the appropriate pre- or post-curation exclusion list, or add a
+validated biological expansion to `allow_high_coverage_families`. This
+distinction prevents real lineage-specific TE bursts from being silently
+discarded. Curated Dfam families remain in the full report but do not trigger
+the gate.
 
 ## LTR discovery modes
 
@@ -288,6 +367,10 @@ All paths are relative to `output_dir`.
 | Output | Description |
 |---|---|
 | `01_repeatmodeler/*-families.fa` | RepeatModeler family library |
+| `01a_manual_curated/repeatmodeler_exclusions.tsv` | Auditable list of exclusions applied before TEtrimmer |
+| `01a_manual_curated/post_curation_exclusions.tsv` | Auditable list of exclusions applied after TEtrimmer |
+| `01a_tetrimmer/TEtrimmer_consensus_merged.fasta` | Optional TEtrimmer-curated consensus library |
+| `01a_tetrimmer/summary.txt` | TEtrimmer boundary and evaluation report |
 | `01b_classified_filtered/*.filtered.fa` | Classified families after the protein-hit heuristic |
 | `01b_classified_filtered/removed_artifacts.tsv` | Families removed by that heuristic |
 | `02b_ltr_retriever/LTRlib.fa` | Nonredundant structural LTR library |
@@ -297,6 +380,9 @@ All paths are relative to `output_dir`.
 | `03_repeatmasker_final/*.fa.out.gff` | RepeatMasker GFF output |
 | `04_postprocess/repeats.bed` | RepeatMasker calls converted to BED |
 | `04_postprocess/te_summary_by_class.tsv` | Hit count and annotated bases by TE class |
+| `04_postprocess/family_contribution.tsv` | Masked bases and genome percentage for every family |
+| `04_postprocess/flagged_families.tsv` | Families exceeding the configured coverage threshold |
+| `04_postprocess/family_qc.passed` | Marker showing that the dominance gate passed |
 | `04_postprocess/tandem_repeats.bed` | Optional merged tandem-repeat BED |
 | `04_postprocess/trf/manifest.tsv` | TRF chunk sizes and sequence counts |
 | `04_postprocess/repeat_landscape.html` | Optional Kimura-divergence landscape |
@@ -319,6 +405,12 @@ Snakefile (`1e-10`).
 Snakemake retains valid completed outputs. After correcting a failed rule,
 restart with `--rerun-incomplete`; do not delete completed RepeatModeler or
 RepeatMasker outputs.
+
+If `family_qc_gate` stops the workflow, the expensive RepeatMasker job has
+already completed and the diagnostic reports are preserved. Review the
+flagged consensus, update the appropriate exclusion list or
+`allow_high_coverage_families`, and restart normally. Snakemake reruns only the
+library and downstream rules affected by that decision.
 
 The new TRF scatter layout ignores `.dat` files left in the old
 `04_postprocess/trf/` directory, but preserving a failed directory is useful
@@ -354,6 +446,8 @@ If you use this workflow, cite the repository release as well as the tools used
 in your selected branches, including Snakemake, RepeatModeler, RepeatMasker,
 LTR_retriever, LTR_FINDER_parallel, GenomeTools/LTRharvest, CD-HIT, TRF, Dfam,
 and UniProt where applicable. See `CITATION.cff` for repository metadata.
+When `run_tetrimmer: true`, also cite TEtrimmer and the tools used by its
+curation workflow.
 
 ## License
 

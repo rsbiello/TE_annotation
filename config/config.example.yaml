@@ -29,6 +29,33 @@ run_ltr_retriever: false
 run_trf: true
 generate_landscape: true
 
+# Recommended for production libraries. TEtrimmer rebuilds RepeatModeler
+# consensuses from genomic copies and helps remove composite boundaries.
+# It is optional because it adds a substantial curation step and may download
+# Pfam data on first use.
+run_tetrimmer: true
+# Set this when compute nodes cannot download the Pfam database automatically.
+# tetrimmer_pfam_dir: "/absolute/path/to/pfam"
+
+# Reviewed RepeatModeler family names to remove before TEtrimmer and all
+# downstream library construction. Keep this species-specific list in the
+# analysis config; do not edit generated FASTA files by hand.
+exclude_families: []
+
+# TEtrimmer can rename or split input families. Use this second list for names
+# found in TEtrimmer_consensus_merged.fasta (or in the library used when
+# run_tetrimmer is false).
+exclude_curated_families: []
+
+# Stop when one de novo family accounts for an unusually large fraction of the genome.
+# A flagged family is never deleted automatically: inspect it, then either add
+# a confirmed artifact to exclude_families or a validated biological expansion
+# to allow_high_coverage_families.
+family_qc:
+  max_genome_percent_per_family: 5.0
+  fail_on_excess: true
+  allow_high_coverage_families: []
+
 # TRF is serial. The genome is divided into this many balanced FASTA chunks;
 # sequence records are never broken, so BED coordinates remain unchanged.
 # Increase for fragmented assemblies or larger clusters; maximum 256.
@@ -59,6 +86,11 @@ resources:
     threads: 16
     mem_gb: 64
     time: "2-00:00:00"
+    partition: "bigmem"
+  tetrimmer:
+    threads: 32
+    mem_gb: 128
+    time: "3-00:00:00"
     partition: "bigmem"
   ltr_retriever:
     threads: 32

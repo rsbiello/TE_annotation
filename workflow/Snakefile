@@ -1,5 +1,6 @@
 import os
 import re
+import shlex
 from pathlib import Path
 
 # ============================================================================
@@ -58,6 +59,44 @@ FINAL_LIBRARY_NAME = config.get(
 REPEATMODELER_LTR_OPTION = (
     "-LTRStruct" if config.get("repeatmodeler_ltr_struct", True) else ""
 )
+RUN_TETRIMMER = bool(config.get("run_tetrimmer", False))
+TETRIMMER_PFAM_DIR = config.get("tetrimmer_pfam_dir")
+TETRIMMER_RESOURCE_KEY = (
+    "tetrimmer" if "tetrimmer" in config["resources"] else "classify_filter"
+)
+
+EXCLUDE_FAMILIES = config.get("exclude_families", [])
+if not isinstance(EXCLUDE_FAMILIES, list) or not all(
+    isinstance(name, str) and name.strip() for name in EXCLUDE_FAMILIES
+):
+    raise ValueError("exclude_families must be a YAML list of nonempty family names")
+if len(EXCLUDE_FAMILIES) != len(set(EXCLUDE_FAMILIES)):
+    raise ValueError("exclude_families contains duplicate family names")
+
+EXCLUDE_CURATED_FAMILIES = config.get("exclude_curated_families", [])
+if not isinstance(EXCLUDE_CURATED_FAMILIES, list) or not all(
+    isinstance(name, str) and name.strip() for name in EXCLUDE_CURATED_FAMILIES
+):
+    raise ValueError(
+        "exclude_curated_families must be a YAML list of nonempty family names"
+    )
+if len(EXCLUDE_CURATED_FAMILIES) != len(set(EXCLUDE_CURATED_FAMILIES)):
+    raise ValueError("exclude_curated_families contains duplicate family names")
+
+FAMILY_QC_CONFIG = config.get("family_qc", {})
+FAMILY_QC_MAX_PERCENT = float(
+    FAMILY_QC_CONFIG.get("max_genome_percent_per_family", 5.0)
+)
+if not 0 < FAMILY_QC_MAX_PERCENT <= 100:
+    raise ValueError("family_qc.max_genome_percent_per_family must be in (0, 100]")
+FAMILY_QC_FAIL = bool(FAMILY_QC_CONFIG.get("fail_on_excess", True))
+FAMILY_QC_ALLOWLIST = FAMILY_QC_CONFIG.get("allow_high_coverage_families", [])
+if not isinstance(FAMILY_QC_ALLOWLIST, list) or not all(
+    isinstance(name, str) and name.strip() for name in FAMILY_QC_ALLOWLIST
+):
+    raise ValueError(
+        "family_qc.allow_high_coverage_families must be a YAML list of family names"
+    )
 
 TRF_ROOT = f"{OUTDIR}/04_postprocess/trf"
 TRF_CHUNKS = int(config.get("trf_chunks", 32))
@@ -70,7 +109,7 @@ if TRF_THREADS != 1:
         "resources.trf.threads must be 1 because TRF parallelism uses chunks"
     )
 
-localrules: all
+localrules: all, family_qc_gate
 
 # ============================================================================
 # FINAL TARGETS
@@ -80,6 +119,8 @@ FINAL = [
     f"{OUTDIR}/03_repeatmasker_final/{GENOME_NAME}.masked",
     f"{OUTDIR}/04_postprocess/repeats.bed",
     f"{OUTDIR}/04_postprocess/te_summary_by_class.tsv",
+    f"{OUTDIR}/04_postprocess/family_contribution.tsv",
+    f"{OUTDIR}/04_postprocess/family_qc.passed",
 ]
 
 if config.get("run_trf", False):
@@ -194,12 +235,135 @@ rule repeatmodeler:
         """
 
 # ============================================================================
-# 01B CLASSIFY & FILTER ARTIFACTS
+# 01A MANUAL FAMILY EXCLUSIONS
+# ============================================================================
+
+rule apply_manual_exclusions:
+    input:
+        rules.repeatmodeler.output.families
+    output:
+        filtered = f"{OUTDIR}/01a_manual_curated/{DB_NAME}-families.pre_tetrimmer.fa",
+        report   = f"{OUTDIR}/01a_manual_curated/repeatmodeler_exclusions.tsv"
+    params:
+        exclude_args = " ".join(
+            f"--exclude {shlex.quote(name)}" for name in EXCLUDE_FAMILIES
+        )
+    resources:
+        **slurm_res("light")
+    shell:
+        """
+        set -euo pipefail
+        mkdir -p $(dirname {output.filtered:q})
+        python workflow/scripts/exclude_families.py \
+            --input {input:q} \
+            --output {output.filtered:q} \
+            --report {output.report:q} \
+            {params.exclude_args}
+        """
+
+# ============================================================================
+# 01B AUTOMATED CONSENSUS CURATION (optional)
+# ============================================================================
+
+rule tetrimmer:
+    input:
+        families = rules.apply_manual_exclusions.output.filtered,
+        genome   = GENOME
+    output:
+        library = f"{OUTDIR}/01a_tetrimmer/TEtrimmer_consensus_merged.fasta",
+        summary = f"{OUTDIR}/01a_tetrimmer/summary.txt"
+    params:
+        odir = f"{OUTDIR}/01a_tetrimmer",
+        pfam_dir = str(TETRIMMER_PFAM_DIR) if TETRIMMER_PFAM_DIR else "",
+        pfam_option = (
+            f"--pfam_dir {shlex.quote(str(TETRIMMER_PFAM_DIR))}"
+            if TETRIMMER_PFAM_DIR
+            else ""
+        )
+    threads: config["resources"][TETRIMMER_RESOURCE_KEY]["threads"]
+    resources:
+        **slurm_res(TETRIMMER_RESOURCE_KEY)
+    conda:
+        "envs/tetrimmer.yaml"
+    shell:
+        """
+        set -euo pipefail
+        mkdir -p {params.odir:q}
+
+        # A content-specific run directory allows a killed job to resume while
+        # preventing stale results from being reused after the input changes.
+        RUN_ID=$(
+            {{ sha256sum {input.families:q}; stat -c '%n %s %Y' {input.genome:q}; }} | \
+                sha256sum | cut -d' ' -f1
+        )
+        RUN_DIR={params.odir:q}/runs/$RUN_ID
+        mkdir -p "$RUN_DIR"
+        export XDG_CACHE_HOME="$RUN_DIR/.cache"
+        export MPLCONFIGDIR="$RUN_DIR/.cache/matplotlib"
+
+        if [[ -n {params.pfam_dir:q} ]]; then
+            mkdir -p {params.pfam_dir:q}
+        fi
+
+        CONTINUE_OPTION=""
+        if [[ -d "$RUN_DIR/Single_fasta_files" ]]; then
+            CONTINUE_OPTION="--continue_analysis"
+        fi
+
+        TEtrimmer \
+            --input_file {input.families:q} \
+            --genome_file {input.genome:q} \
+            --output_dir "$RUN_DIR" \
+            --num_threads {threads} \
+            --dedup \
+            {params.pfam_option} \
+            $CONTINUE_OPTION
+
+        test -s "$RUN_DIR/TEtrimmer_consensus_merged.fasta"
+        test -s "$RUN_DIR/summary.txt"
+        cp "$RUN_DIR/TEtrimmer_consensus_merged.fasta" {output.library:q}.tmp
+        cp "$RUN_DIR/summary.txt" {output.summary:q}.tmp
+        mv {output.library:q}.tmp {output.library:q}
+        mv {output.summary:q}.tmp {output.summary:q}
+        """
+
+
+def families_after_tetrimmer(wildcards):
+    if RUN_TETRIMMER:
+        return rules.tetrimmer.output.library
+    return rules.apply_manual_exclusions.output.filtered
+
+
+rule apply_post_curation_exclusions:
+    input:
+        families_after_tetrimmer
+    output:
+        filtered = f"{OUTDIR}/01a_manual_curated/{DB_NAME}-families.post_curation.fa",
+        report   = f"{OUTDIR}/01a_manual_curated/post_curation_exclusions.tsv"
+    params:
+        exclude_args = " ".join(
+            f"--exclude {shlex.quote(name)}" for name in EXCLUDE_CURATED_FAMILIES
+        )
+    resources:
+        **slurm_res("light")
+    shell:
+        """
+        set -euo pipefail
+        mkdir -p $(dirname {output.filtered:q})
+        python workflow/scripts/exclude_families.py \
+            --input {input:q} \
+            --output {output.filtered:q} \
+            --report {output.report:q} \
+            {params.exclude_args}
+        """
+
+# ============================================================================
+# 01C CLASSIFY & FILTER ARTIFACTS
 # ============================================================================
 
 rule classify_filter:
     input:
-        families = rules.repeatmodeler.output.families,
+        families = rules.apply_post_curation_exclusions.output.filtered,
         protein_db = config["protein_db"]
     output:
         filtered = f"{OUTDIR}/01b_classified_filtered/{DB_NAME}-families.classified.filtered.fa",
@@ -672,7 +836,64 @@ rule te_summary:
         """
 
 # ============================================================================
-# 04D TE LANDSCAPE (optional)
+# 04D PER-FAMILY CONTRIBUTION QC
+# ============================================================================
+
+rule family_qc:
+    input:
+        rm_out = rules.repeatmasker.output.out,
+        genome = GENOME,
+        denovo = rules.cdhit_self.output.nr
+    output:
+        summary = f"{OUTDIR}/04_postprocess/family_contribution.tsv",
+        flagged = f"{OUTDIR}/04_postprocess/flagged_families.tsv"
+    params:
+        max_percent = FAMILY_QC_MAX_PERCENT,
+        allow_args = " ".join(
+            f"--allow-family {shlex.quote(name)}"
+            for name in FAMILY_QC_ALLOWLIST
+        )
+    resources:
+        **slurm_res("postprocess")
+    shell:
+        """
+        set -euo pipefail
+        mkdir -p $(dirname {output.summary:q})
+        python workflow/scripts/family_qc.py \
+            --repeatmasker-out {input.rm_out:q} \
+            --genome {input.genome:q} \
+            --denovo-library {input.denovo:q} \
+            --summary {output.summary:q} \
+            --flagged {output.flagged:q} \
+            --max-genome-percent {params.max_percent} \
+            {params.allow_args}
+        """
+
+
+rule family_qc_gate:
+    input:
+        flagged = rules.family_qc.output.flagged
+    output:
+        passed = f"{OUTDIR}/04_postprocess/family_qc.passed"
+    params:
+        fail_on_excess = "true" if FAMILY_QC_FAIL else "false"
+    shell:
+        """
+        set -euo pipefail
+        FLAG_COUNT=$(awk 'NR > 1 {{count++}} END {{print count+0}}' {input.flagged:q})
+        if (( FLAG_COUNT > 0 )); then
+            echo "WARNING: $FLAG_COUNT repeat family/families exceed the configured genome-coverage threshold." >&2
+            cat {input.flagged:q} >&2
+            if [[ {params.fail_on_excess:q} == "true" ]]; then
+                echo "ERROR: inspect the flagged families, then exclude confirmed artifacts or allowlist validated expansions." >&2
+                exit 1
+            fi
+        fi
+        touch {output.passed:q}
+        """
+
+# ============================================================================
+# 04E TE LANDSCAPE (optional)
 # ============================================================================
 
 rule landscape:
@@ -688,13 +909,26 @@ rule landscape:
         "envs/repeatmasker.yaml"
     shell:
         """
-        mkdir -p $(dirname {output.html})
-        GENOME_SIZE=$(grep -v '^>' {input.genome} | tr -d '\n' | wc -c)
+        set -euo pipefail
+        mkdir -p $(dirname {output.html:q})
+
+        RM_CONFIG=$(find "$CONDA_PREFIX" \
+            -type f \
+            -name RepeatMaskerConfig.pm \
+            -print -quit)
+        if [[ -z "$RM_CONFIG" ]]; then
+            echo "ERROR: RepeatMaskerConfig.pm was not found in $CONDA_PREFIX" >&2
+            exit 1
+        fi
+        RM_LIB_DIR=$(dirname "$RM_CONFIG")
+        export PERL5LIB="$RM_LIB_DIR${{PERL5LIB:+:$PERL5LIB}}"
+
+        GENOME_SIZE=$(grep -v '^>' {input.genome:q} | tr -d '\n' | wc -c)
         calcDivergenceFromAlign.pl \
-            -s {output.html}.divsum \
-            {input.align}
+            -s {output.html:q}.divsum \
+            {input.align:q}
         createRepeatLandscape.pl \
-            -div {output.html}.divsum \
-            -g $GENOME_SIZE \
-            > {output.html}
+            -div {output.html:q}.divsum \
+            -g "$GENOME_SIZE" \
+            > {output.html:q}
         """

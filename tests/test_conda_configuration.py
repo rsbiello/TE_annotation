@@ -27,6 +27,12 @@ class CondaConfigurationTests(unittest.TestCase):
         self.assertIn("repeatmasker =4.2.4", deps)
         self.assertIn("famdb =3.0.0", deps)
 
+    def test_tetrimmer_version_is_pinned(self):
+        deps = dependencies("tetrimmer.yaml")
+        self.assertIn("tetrimmer =1.7.2", deps)
+        self.assertIn("repeatmodeler =2.0.9", deps)
+        self.assertIn("repeatmasker =4.2.4", deps)
+
     def test_workflow_has_no_container_runtime(self):
         snakefile = (ROOT / "workflow" / "Snakefile").read_text().lower()
         for term in ("docker", "podman", "tetools", "container_runtime"):
@@ -50,6 +56,12 @@ class CondaConfigurationTests(unittest.TestCase):
         self.assertIn('-famdb_dir "$FAMDB_WRAPPER_DIR"', repeatmasker_rule)
         self.assertIn('exec %q -i %q "$@"', repeatmasker_rule)
         self.assertNotIn("-famdb_dir {params.famdb_data}", repeatmasker_rule)
+
+    def test_landscape_adds_repeatmasker_modules_to_perl_path(self):
+        snakefile = (ROOT / "workflow" / "Snakefile").read_text()
+        landscape_rule = snakefile.split("rule landscape:", 1)[1]
+        self.assertIn("RepeatMaskerConfig.pm", landscape_rule)
+        self.assertIn('export PERL5LIB="$RM_LIB_DIR', landscape_rule)
 
 
 if __name__ == "__main__":

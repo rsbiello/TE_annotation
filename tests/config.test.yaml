@@ -7,6 +7,13 @@ famdb_dir: "tests/data"
 protein_db: "tests/data/proteins.fa"
 run_ltr_retriever: false
 repeatmodeler_ltr_struct: true
+run_tetrimmer: false
+exclude_families: []
+exclude_curated_families: []
+family_qc:
+  max_genome_percent_per_family: 100.0
+  fail_on_excess: true
+  allow_high_coverage_families: []
 run_trf: false
 generate_landscape: false
 trf_chunks: 2
@@ -25,6 +32,7 @@ cdhit_coverage_self: 0.80
 resources:
   repeatmodeler: {threads: 1, mem_gb: 1, time: "00:10:00", partition: "test"}
   classify_filter: {threads: 1, mem_gb: 1, time: "00:10:00", partition: "test"}
+  tetrimmer: {threads: 1, mem_gb: 1, time: "00:10:00", partition: "test"}
   ltr_retriever: {threads: 1, mem_gb: 1, time: "00:10:00", partition: "test"}
   cdhit: {threads: 1, mem_gb: 1, time: "00:10:00", partition: "test"}
   repeatmasker: {threads: 1, mem_gb: 1, time: "00:10:00", partition: "test"}
