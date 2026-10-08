@@ -4,6 +4,3 @@ channels:
   - bioconda
 dependencies:
   - tetrimmer =1.7.2
-  - repeatmodeler =2.0.9
-  - repeatmasker =4.2.4
-  - famdb =3.0.0

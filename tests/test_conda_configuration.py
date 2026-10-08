@@ -30,8 +30,6 @@ class CondaConfigurationTests(unittest.TestCase):
     def test_tetrimmer_version_is_pinned(self):
         deps = dependencies("tetrimmer.yaml")
         self.assertIn("tetrimmer =1.7.2", deps)
-        self.assertIn("repeatmodeler =2.0.9", deps)
-        self.assertIn("repeatmasker =4.2.4", deps)
 
     def test_workflow_has_no_container_runtime(self):
         snakefile = (ROOT / "workflow" / "Snakefile").read_text().lower()
