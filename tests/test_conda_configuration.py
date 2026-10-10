@@ -31,6 +31,19 @@ class CondaConfigurationTests(unittest.TestCase):
         deps = dependencies("tetrimmer.yaml")
         self.assertIn("tetrimmer =1.7.2", deps)
 
+    def test_tetrimmer_recovers_timestamped_output_directory(self):
+        snakefile = (ROOT / "workflow" / "Snakefile").read_text()
+        tetrimmer_rule = snakefile.split("rule tetrimmer:", 1)[1].split(
+            "def families_after_tetrimmer", 1
+        )[0]
+        self.assertIn('"$RUN_DIR"/TEtrimmer_output_*', tetrimmer_rule)
+        self.assertIn('elif [[ -d "$CANDIDATE/Single_fasta_files" ]]', tetrimmer_rule)
+        self.assertIn('echo "Reusing completed TEtrimmer output:', tetrimmer_rule)
+        self.assertIn('--output_dir "$TE_OUTPUT_DIR"', tetrimmer_rule)
+        self.assertIn(
+            'cp "$RESULT_DIR/TEtrimmer_consensus_merged.fasta"', tetrimmer_rule
+        )
+
     def test_workflow_has_no_container_runtime(self):
         snakefile = (ROOT / "workflow" / "Snakefile").read_text().lower()
         for term in ("docker", "podman", "tetools", "container_runtime"):

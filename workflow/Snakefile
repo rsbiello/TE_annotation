@@ -305,24 +305,67 @@ rule tetrimmer:
             mkdir -p {params.pfam_dir:q}
         fi
 
-        CONTINUE_OPTION=""
-        if [[ -d "$RUN_DIR/Single_fasta_files" ]]; then
-            CONTINUE_OPTION="--continue_analysis"
+        # TEtrimmer creates TEtrimmer_output_<timestamp> below --output_dir.
+        # Find a completed output first, or the newest incomplete output that
+        # can be resumed. Older TEtrimmer releases may instead write directly
+        # into RUN_DIR, so include it as a candidate as well.
+        COMPLETE_DIR=""
+        RESUME_DIR=""
+        for CANDIDATE in "$RUN_DIR" "$RUN_DIR"/TEtrimmer_output_*; do
+            [[ -d "$CANDIDATE" ]] || continue
+
+            if [[ -s "$CANDIDATE/TEtrimmer_consensus_merged.fasta" && \
+                  -s "$CANDIDATE/summary.txt" ]]; then
+                if [[ -z "$COMPLETE_DIR" || "$CANDIDATE" -nt "$COMPLETE_DIR" ]]; then
+                    COMPLETE_DIR="$CANDIDATE"
+                fi
+            elif [[ -d "$CANDIDATE/Single_fasta_files" ]]; then
+                if [[ -z "$RESUME_DIR" || "$CANDIDATE" -nt "$RESUME_DIR" ]]; then
+                    RESUME_DIR="$CANDIDATE"
+                fi
+            fi
+        done
+
+        if [[ -n "$COMPLETE_DIR" ]]; then
+            echo "Reusing completed TEtrimmer output: $COMPLETE_DIR"
+            RESULT_DIR="$COMPLETE_DIR"
+        else
+            TE_OUTPUT_DIR="$RUN_DIR"
+            CONTINUE_OPTION=""
+            if [[ -n "$RESUME_DIR" ]]; then
+                TE_OUTPUT_DIR="$RESUME_DIR"
+                CONTINUE_OPTION="--continue_analysis"
+                echo "Resuming TEtrimmer output: $RESUME_DIR"
+            fi
+
+            TEtrimmer \
+                --input_file {input.families:q} \
+                --genome_file {input.genome:q} \
+                --output_dir "$TE_OUTPUT_DIR" \
+                --num_threads {threads} \
+                --dedup \
+                {params.pfam_option} \
+                $CONTINUE_OPTION
+
+            RESULT_DIR=""
+            for CANDIDATE in "$RUN_DIR" "$RUN_DIR"/TEtrimmer_output_*; do
+                [[ -d "$CANDIDATE" ]] || continue
+                if [[ -s "$CANDIDATE/TEtrimmer_consensus_merged.fasta" && \
+                      -s "$CANDIDATE/summary.txt" ]]; then
+                    if [[ -z "$RESULT_DIR" || "$CANDIDATE" -nt "$RESULT_DIR" ]]; then
+                        RESULT_DIR="$CANDIDATE"
+                    fi
+                fi
+            done
         fi
 
-        TEtrimmer \
-            --input_file {input.families:q} \
-            --genome_file {input.genome:q} \
-            --output_dir "$RUN_DIR" \
-            --num_threads {threads} \
-            --dedup \
-            {params.pfam_option} \
-            $CONTINUE_OPTION
+        if [[ -z "$RESULT_DIR" ]]; then
+            echo "ERROR: TEtrimmer did not produce a nonempty consensus and summary under $RUN_DIR" >&2
+            exit 1
+        fi
 
-        test -s "$RUN_DIR/TEtrimmer_consensus_merged.fasta"
-        test -s "$RUN_DIR/summary.txt"
-        cp "$RUN_DIR/TEtrimmer_consensus_merged.fasta" {output.library:q}.tmp
-        cp "$RUN_DIR/summary.txt" {output.summary:q}.tmp
+        cp "$RESULT_DIR/TEtrimmer_consensus_merged.fasta" {output.library:q}.tmp
+        cp "$RESULT_DIR/summary.txt" {output.summary:q}.tmp
         mv {output.library:q}.tmp {output.library:q}
         mv {output.summary:q}.tmp {output.summary:q}
         """
