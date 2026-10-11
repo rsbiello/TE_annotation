@@ -28,6 +28,10 @@ repeatmodeler_ltr_struct: true
 run_ltr_retriever: false
 run_trf: true
 generate_landscape: true
+# true uses RepeatMasker's CpG-adjusted Kimura values. Set false to force a
+# standard Kimura recalculation from the alignment strings. In either mode,
+# negative estimates are retained in the zero-divergence plotting bin.
+landscape_cpg_adjusted: true
 
 # Recommended for production libraries. TEtrimmer rebuilds RepeatModeler
 # consensuses from genomic copies and helps remove composite boundaries.

@@ -98,6 +98,11 @@ if not isinstance(FAMILY_QC_ALLOWLIST, list) or not all(
         "family_qc.allow_high_coverage_families must be a YAML list of family names"
     )
 
+LANDSCAPE_CPG_ADJUSTED = config.get("landscape_cpg_adjusted", True)
+if not isinstance(LANDSCAPE_CPG_ADJUSTED, bool):
+    raise ValueError("landscape_cpg_adjusted must be true or false")
+LANDSCAPE_DIVERGENCE_OPTION = "" if LANDSCAPE_CPG_ADJUSTED else "-noCpGMod"
+
 TRF_ROOT = f"{OUTDIR}/04_postprocess/trf"
 TRF_CHUNKS = int(config.get("trf_chunks", 32))
 TRF_CONFIG = config.get("trf_parameters", {})
@@ -120,6 +125,7 @@ FINAL = [
     f"{OUTDIR}/04_postprocess/repeats.bed",
     f"{OUTDIR}/04_postprocess/te_summary_by_class.tsv",
     f"{OUTDIR}/04_postprocess/family_contribution.tsv",
+    f"{OUTDIR}/04_postprocess/source_coverage.tsv",
     f"{OUTDIR}/04_postprocess/family_qc.passed",
 ]
 
@@ -886,6 +892,7 @@ rule family_qc:
     input:
         rm_out = rules.repeatmasker.output.out,
         genome = GENOME,
+        curated = rules.export_dfam.output.curated,
         denovo = rules.cdhit_self.output.nr
     output:
         summary = f"{OUTDIR}/04_postprocess/family_contribution.tsv",
@@ -905,11 +912,35 @@ rule family_qc:
         python workflow/scripts/family_qc.py \
             --repeatmasker-out {input.rm_out:q} \
             --genome {input.genome:q} \
+            --curated-library {input.curated:q} \
             --denovo-library {input.denovo:q} \
             --summary {output.summary:q} \
             --flagged {output.flagged:q} \
             --max-genome-percent {params.max_percent} \
             {params.allow_args}
+        """
+
+
+rule source_coverage:
+    input:
+        rm_out = rules.repeatmasker.output.out,
+        genome = GENOME,
+        curated = rules.export_dfam.output.curated,
+        denovo = rules.cdhit_self.output.nr
+    output:
+        summary = f"{OUTDIR}/04_postprocess/source_coverage.tsv"
+    resources:
+        **slurm_res("postprocess")
+    shell:
+        """
+        set -euo pipefail
+        mkdir -p $(dirname {output.summary:q})
+        python workflow/scripts/source_coverage.py \
+            --repeatmasker-out {input.rm_out:q} \
+            --genome {input.genome:q} \
+            --curated-library {input.curated:q} \
+            --denovo-library {input.denovo:q} \
+            --output {output.summary:q}
         """
 
 
@@ -944,7 +975,10 @@ rule landscape:
         align  = rules.repeatmasker.output.align,
         genome = GENOME
     output:
-        html = f"{OUTDIR}/04_postprocess/repeat_landscape.html"
+        html = f"{OUTDIR}/04_postprocess/repeat_landscape.html",
+        divsum = f"{OUTDIR}/04_postprocess/repeat_landscape.html.divsum"
+    params:
+        divergence_option = LANDSCAPE_DIVERGENCE_OPTION
     threads: 1
     resources:
         **slurm_res("postprocess")
@@ -966,12 +1000,32 @@ rule landscape:
         RM_LIB_DIR=$(dirname "$RM_CONFIG")
         export PERL5LIB="$RM_LIB_DIR${{PERL5LIB:+:$PERL5LIB}}"
 
+        CALC=$(find "$CONDA_PREFIX" \
+            -type f \
+            -name calcDivergenceFromAlign.pl \
+            -print -quit)
+        LANDSCAPE=$(find "$CONDA_PREFIX" \
+            -type f \
+            -name createRepeatLandscape.pl \
+            -print -quit)
+        if [[ -z "$CALC" || -z "$LANDSCAPE" ]]; then
+            echo "ERROR: RepeatMasker landscape utilities were not found" >&2
+            exit 1
+        fi
+
+        PATCHED_CALC=$(mktemp "$(dirname {output.html:q})/.calcDivergence.XXXXXX.pl")
+        trap 'rm -f "$PATCHED_CALC"' EXIT
+        python workflow/scripts/patch_repeatmasker_divergence.py \
+            --input "$CALC" \
+            --output "$PATCHED_CALC"
+
         GENOME_SIZE=$(grep -v '^>' {input.genome:q} | tr -d '\n' | wc -c)
-        calcDivergenceFromAlign.pl \
-            -s {output.html:q}.divsum \
+        perl "$PATCHED_CALC" \
+            {params.divergence_option} \
+            -s {output.divsum:q} \
             {input.align:q}
-        createRepeatLandscape.pl \
-            -div {output.html:q}.divsum \
+        perl "$LANDSCAPE" \
+            -div {output.divsum:q} \
             -g "$GENOME_SIZE" \
             > {output.html:q}
         """

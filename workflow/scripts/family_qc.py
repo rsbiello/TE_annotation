@@ -50,8 +50,25 @@ def library_family_names(path: str | Path) -> set[str]:
     return names
 
 
+def family_source(
+    family: str, curated_families: set[str], denovo_families: set[str]
+) -> str:
+    """Return the library provenance for a RepeatMasker family name."""
+    in_curated = family in curated_families
+    in_denovo = family in denovo_families
+    if in_curated and in_denovo:
+        return "ambiguous_library"
+    if in_denovo:
+        return "de_novo"
+    if in_curated:
+        return "curated"
+    return "repeatmasker_internal"
+
+
 def repeatmasker_stats(
-    path: str | Path, denovo_families: set[str]
+    path: str | Path,
+    curated_families: set[str],
+    denovo_families: set[str],
 ) -> dict[str, FamilyStats]:
     stats: dict[str, FamilyStats] = {}
     current_sequence: str | None = None
@@ -90,7 +107,7 @@ def repeatmasker_stats(
 
             family = fields[9]
             repeat_class = fields[10] or "Unknown"
-            source = "de_novo" if family in denovo_families else "curated"
+            source = family_source(family, curated_families, denovo_families)
             record = stats.setdefault(
                 family, FamilyStats(repeat_class=repeat_class, source=source)
             )
@@ -169,6 +186,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repeatmasker-out", required=True)
     parser.add_argument("--genome", required=True)
+    parser.add_argument("--curated-library", required=True)
     parser.add_argument("--denovo-library", required=True)
     parser.add_argument("--summary", required=True)
     parser.add_argument("--flagged", required=True)
@@ -182,8 +200,9 @@ def main() -> None:
     if not 0 < args.max_genome_percent <= 100:
         raise ValueError("--max-genome-percent must be in (0, 100]")
     genome_size = fasta_size(args.genome)
+    curated = library_family_names(args.curated_library)
     denovo = library_family_names(args.denovo_library)
-    stats = repeatmasker_stats(args.repeatmasker_out, denovo)
+    stats = repeatmasker_stats(args.repeatmasker_out, curated, denovo)
     flagged = write_reports(
         stats,
         genome_size,

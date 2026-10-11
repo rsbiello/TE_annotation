@@ -226,9 +226,9 @@ Use `01a_tetrimmer/summary.txt` to map an output name back to its RepeatModeler
 input name when you want to exclude it before curation. Post-curation removals
 are recorded in `01a_manual_curated/post_curation_exclusions.tsv`.
 
-After RepeatMasker, the workflow calculates non-overlapping coverage for every
-family and stops when one de novo family exceeds the configured fraction of
-the genome:
+After RepeatMasker, the workflow calculates the within-family interval union
+for every family and stops when one de novo family exceeds the configured
+fraction of the genome:
 
 ```yaml
 family_qc:
@@ -243,7 +243,31 @@ artifact to the appropriate pre- or post-curation exclusion list, or add a
 validated biological expansion to `allow_high_coverage_families`. This
 distinction prevents real lineage-specific TE bursts from being silently
 discarded. Curated Dfam families remain in the full report but do not trigger
-the gate.
+the gate. RepeatMasker-generated simple-repeat and low-complexity calls are
+reported as `repeatmasker_internal`, rather than being mislabeled as curated.
+
+The separate `04_postprocess/source_coverage.tsv` report provides the proper
+genome-wide source comparison. It performs an interval sweep and divides the
+annotation into mutually exclusive categories such as `curated`, `de_novo`,
+`curated+de_novo`, and `repeatmasker_internal`. Use its `interspersed` rows for
+the curated-versus-de-novo TE comparison. Because shared intervals are
+reported explicitly, the source percentages sum to 100% without proportional
+normalization.
+
+## Repeat landscape
+
+Set `generate_landscape: true` to create the Kimura-divergence landscape.
+`landscape_cpg_adjusted: true` retains RepeatMasker's usual CpG-adjusted
+metric. Setting it to `false` forces a standard Kimura recalculation from the
+alignment strings, including for modern `.align` files that already contain a
+stored CpG-adjusted value. The workflow patches a temporary job-local copy of
+the RepeatMasker 4.2.4 utility and never modifies the Conda environment.
+
+Negative corrected divergence values have no interpretable negative age and
+would otherwise disappear from RepeatMasker's 0--70 plotting bins. The
+workflow places their coverage in the zero-divergence bin. This affects only
+the landscape visualization, not the RepeatMasker annotation or `.tbl`
+statistics.
 
 ## LTR discovery modes
 
@@ -383,6 +407,7 @@ All paths are relative to `output_dir`.
 | `04_postprocess/family_contribution.tsv` | Masked bases and genome percentage for every family |
 | `04_postprocess/flagged_families.tsv` | Families exceeding the configured coverage threshold |
 | `04_postprocess/family_qc.passed` | Marker showing that the dominance gate passed |
+| `04_postprocess/source_coverage.tsv` | Mutually exclusive curated, de novo, shared, and internal coverage |
 | `04_postprocess/tandem_repeats.bed` | Optional merged tandem-repeat BED |
 | `04_postprocess/trf/manifest.tsv` | TRF chunk sizes and sequence counts |
 | `04_postprocess/repeat_landscape.html` | Optional Kimura-divergence landscape |

@@ -22,6 +22,8 @@ class FamilyQCTests(unittest.TestCase):
         self.genome.write_text(">chr1\n" + "A" * 200 + "\n")
         self.library = self.root / "denovo.fa"
         self.library.write_text(">famA#LINE/CR1\nACGT\n")
+        self.curated = self.root / "curated.fa"
+        self.curated.write_text(">curated#DNA/hAT\nACGT\n")
         self.rm_out = self.root / "genome.fa.out"
         self.rm_out.write_text(
             "header\nheader\nheader\n"
@@ -36,11 +38,14 @@ class FamilyQCTests(unittest.TestCase):
 
     def test_union_coverage_source_and_flagging(self):
         stats = QC.repeatmasker_stats(
-            self.rm_out, QC.library_family_names(self.library)
+            self.rm_out,
+            QC.library_family_names(self.curated),
+            QC.library_family_names(self.library),
         )
         self.assertEqual(stats["famA"].masked_bp, 100)
         self.assertEqual(stats["famA"].hit_count, 2)
         self.assertEqual(stats["famA"].source, "de_novo")
+        self.assertEqual(stats["curated"].source, "curated")
         self.assertNotIn("ignored", stats)
 
         summary = self.root / "summary.tsv"
@@ -61,7 +66,9 @@ class FamilyQCTests(unittest.TestCase):
 
     def test_allowlist_preserves_validated_expansion(self):
         stats = QC.repeatmasker_stats(
-            self.rm_out, QC.library_family_names(self.library)
+            self.rm_out,
+            QC.library_family_names(self.curated),
+            QC.library_family_names(self.library),
         )
         summary = self.root / "summary.tsv"
         flagged = self.root / "flagged.tsv"
@@ -79,7 +86,9 @@ class FamilyQCTests(unittest.TestCase):
 
     def test_large_curated_family_is_reported_but_not_flagged(self):
         stats = QC.repeatmasker_stats(
-            self.rm_out, QC.library_family_names(self.library)
+            self.rm_out,
+            QC.library_family_names(self.curated),
+            QC.library_family_names(self.library),
         )
         summary = self.root / "summary.tsv"
         flagged = self.root / "flagged.tsv"
@@ -94,6 +103,14 @@ class FamilyQCTests(unittest.TestCase):
         self.assertEqual(names, [])
         self.assertIn("curated", summary.read_text())
         self.assertEqual(len(flagged.read_text().splitlines()), 1)
+
+    def test_internal_repeat_is_not_mislabeled_as_curated(self):
+        stats = QC.repeatmasker_stats(
+            self.rm_out,
+            set(),
+            QC.library_family_names(self.library),
+        )
+        self.assertEqual(stats["curated"].source, "repeatmasker_internal")
 
 
 if __name__ == "__main__":

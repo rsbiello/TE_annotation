@@ -16,6 +16,7 @@ family_qc:
   allow_high_coverage_families: []
 run_trf: false
 generate_landscape: false
+landscape_cpg_adjusted: true
 trf_chunks: 2
 trf_parameters:
   match: 2
